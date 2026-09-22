@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#253247"/><stop offset="1" stop-color="#101722"/></linearGradient>
+    <linearGradient id="metal" x2=".8" y2="1"><stop stop-color="#ffe0a0"/><stop offset="1" stop-color="#d99248"/></linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#bg)"/>
+  <rect x="10" y="10" width="236" height="236" rx="54" fill="none" stroke="#b99359" stroke-opacity=".4" stroke-width="3"/>
+  <path d="M64 65 168 45q12-2 14 10l23 139q2 12-10 14L91 226q-12 2-14-10L54 81q-2-13 10-16Z" fill="#111a27" stroke="#809394" stroke-width="7"/>
+  <path d="M158 68q0-25 24-25" fill="none" stroke="url(#metal)" stroke-width="11" stroke-linecap="round"/>
+  <path d="m196 28-3 16m21 8-16 3m-2 16-7-13" fill="none" stroke="#ffe1a0" stroke-width="7" stroke-linecap="round"/>
+  <path d="m148 65 27 9-7 23-28-10Z" fill="url(#metal)"/>
+  <circle cx="129" cy="141" r="61" fill="url(#metal)"/>
+  <circle cx="129" cy="141" r="47" fill="#1b2a3a"/>
+  <path d="M108 172q-29-22-8-51 17-22 42-11 21 10 16 32-5 20-25 19-18-1-17-16 1-11 13-10" fill="none" stroke="#8bdbc8" stroke-width="11" stroke-linecap="round"/>
+  <circle cx="130" cy="141" r="7" fill="#e1fff3"/>
+</svg>

@@ -1,0 +1,43 @@
+.venv/
+.cache/
+.reference/
+workspace/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+*.spec
+!PengPengWorkbench.spec
+node_modules/
+
+# Local credentials and editor / OS files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.log
+*.py[cod]
+.coverage
+htmlcov/
+
+# Local resource databases, extracted audio and game bundles
+*.sqlite*
+*.db
+*.wav
+*.mp3
+*.ogg
+*.fsb
+*.unity3d
+*.bundle
+
+# Machine-specific exploratory scripts (kept locally)
+tools/probe.py
+tools/probe_links.py
+tools/probe_details.py

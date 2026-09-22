@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' file: qrc: data:; script-src 'self' qrc:; style-src 'self' 'unsafe-inline'; img-src 'self' file: data:; media-src file:; connect-src 'none'; object-src 'none'"
+    />
+    <title>砰砰解析台</title>
+    <link rel="stylesheet" href="style.css" />
+    <script src="qrc:///qtwebchannel/qwebchannel.js" defer></script>
+    <script src="effects.js" defer></script>
+    <script src="controls.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <img class="brand-icon" src="icon.svg" alt="">
+        <div><strong>砰砰解析台</strong><span>BOOM RESOURCE LAB</span></div>
+      </div>
+      <div class="side-caption">你的炉石资源档案馆</div>
+      <nav aria-label="主导航">
+        <button class="nav active" data-view="cards">
+          <span>▦</span>卡牌图鉴 <small>01</small>
+        </button>
+        <button class="nav" data-view="heroes">
+          <span>♜</span>英雄图鉴 <small>02</small>
+        </button>
+        <button class="nav" data-view="audio">
+          <span>≋</span>声音资料库 <small>03</small>
+        </button>
+        <button class="nav" data-view="effects">
+          <span>✧</span>特效实验室 <small>04</small>
+        </button>
+        <div class="nav-line"></div>
+        <button class="nav" data-view="exports"><span>↗</span>导出记录</button>
+        <button class="nav" data-view="settings">
+          <span>⚙</span>资源与设置
+        </button>
+      </nav>
+      <div class="side-bottom">
+        <div class="local-label">
+          <i id="connection-dot"></i
+          ><span id="connection">正在连接本地资源</span>
+        </div>
+        <div id="sidebar-version">LOCAL ARCHIVE / 0.2</div>
+        <a href="https://space.bilibili.com/315312"
+          >朝禊ASOGI <span>↗</span></a
+        >
+        <p>在一张卡牌背后，发现整个世界。</p>
+      </div>
+    </aside>
+    <main>
+      <header class="topbar">
+        <div class="breadcrumb">
+          工作台 <span>/</span> <b id="crumb">卡牌图鉴</b>
+        </div>
+        <div class="top-actions">
+          <button id="open-last-export" class="subtle" hidden>打开导出文件夹 ↗</button><span class="privacy">● 本地资源</span
+          ><button id="logs-toggle" class="subtle">⌘ 实时日志</button>
+        </div>
+      </header>
+      <section class="page-head">
+        <div>
+          <div class="eyebrow" id="eyebrow">THE CARD ARCHIVE</div>
+          <h1 id="page-title">每一张卡牌，都有故事<span>。</span></h1>
+          <p id="page-subtitle">从本地游戏文件，探索原画、角色与声音。</p>
+        </div>
+        <button id="scan-button" class="primary">↻ 建立完整资源索引</button>
+      </section>
+      <div id="stats" class="stats">
+        <div><small>本地卡牌</small><strong>—</strong></div>
+        <div><small>英雄 / 皮肤</small><strong>—</strong></div>
+        <div><small>已发现声音</small><strong>—</strong></div>
+        <div><small>资源索引</small><strong>—</strong></div>
+      </div>
+      <section id="library">
+        <div class="toolbar">
+          <label class="search"
+            ><span>⌕</span
+            ><input
+              id="search"
+              type="search"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="搜索卡牌名称、中文文本或 ID…"
+              aria-label="搜索资源"
+            /><kbd>/</kbd></label
+          >
+          <select id="locale" aria-label="语言">
+            <option value="zhcn">简体中文</option>
+          </select>
+          <select id="category" aria-label="音效分类" hidden>
+            <option value="">所有分类</option>
+          </select>
+          <button id="reset-search" class="subtle">重置搜索与筛选</button><button id="favorites" class="subtle" aria-pressed="false">
+            ☆ 收藏
+          </button>
+        </div>
+        <div id="card-filters" class="filter-panel"></div>
+        <div id="catalog-display" class="catalog-display" role="group" aria-label="图鉴显示方式">
+          <div class="layout-switch" role="group" aria-label="视图切换">
+            <button class="subtle" data-layout="grid" aria-pressed="true">▦ 卡片视图</button>
+            <button class="subtle" data-layout="list" aria-pressed="false">☷ 列表视图</button>
+          </div>
+          <label for="catalog-size">卡片大小 · 紧凑到宽松</label>
+          <input id="catalog-size" type="range" min="180" max="300" step="10" value="220">
+          <output id="catalog-size-value" for="catalog-size">100%</output>
+          <button id="reset-layout" class="subtle">恢复默认布局</button>
+        </div>
+        <div id="catalog-order" class="catalog-order" role="group" aria-label="图鉴排序">
+          <label for="sort-by">排序方式</label>
+          <select id="sort-by" aria-label="排序方式">
+            <option value="default">默认排序</option>
+            <option value="name">名称排序</option>
+            <option value="id">ID 排序</option>
+            <option value="release">发布日期排序</option>
+          </select>
+          <button id="sort-direction" class="subtle" aria-pressed="false">↑ 正序</button>
+          <span id="sort-hint">保持原有浏览顺序</span>
+        </div>
+        <div id="language-warning" class="warning" hidden></div>
+        <div class="results-head">
+          <span id="result-count" role="status">正在读取本地卡牌数据库…</span>
+          <div>
+            <button id="export-selected" class="subtle" hidden>
+              导出选中 WAV</button
+            ><span id="view-hint">原始纹理 · 中文优先</span>
+          </div>
+        </div>
+        <div id="results" class="card-grid" aria-live="polite"></div>
+        <footer class="pagination">
+          <button id="prev" class="subtle">← 上一页</button
+          ><span id="page-number">1</span
+          ><button id="next" class="subtle">下一页 →</button>
+          <div id="page-shortcuts" aria-label="快捷页码"></div>
+          <form id="page-jump-form"><input id="jump-page" type="number" min="1" step="1" aria-label="跳转页码" placeholder="页码" required><button class="subtle">跳转</button></form>
+          <label>每页 <select id="page-size" aria-label="每页显示数量"><option>24</option><option>48</option><option>72</option><option>96</option></select></label>
+          <button id="load-more" class="subtle" hidden>加载更多</button>
+        </footer>
+      </section>
+      <section id="settings-page" class="panel-page" hidden></section>
+      <section id="exports-page" class="panel-page" hidden>
+        <h2>导出的声音与图像</h2>
+        <p>
+          WAV 使用 PCM
+          16-bit，保留源采样率与声道。每次导出保存在独立目录，并附带结果报告。
+        </p>
+        <div id="export-history" class="empty">
+          还没有导出记录。打开一张卡牌，或在声音资料库选择音频开始。
+        </div>
+      </section>
+      <div class="jobbar" id="jobbar" hidden>
+        <div>
+          <span class="spinner"></span><b id="job-message">准备索引</b
+          ><small id="job-count"></small>
+        </div>
+        <progress id="job-progress" max="100" value="0"></progress
+        ><button id="cancel-scan" class="subtle">暂停索引</button>
+      </div>
+    </main>
+    <div id="detail-backdrop" class="detail-backdrop" hidden></div>
+    <aside id="detail" class="detail" hidden role="dialog" aria-modal="true" aria-label="资源详情">
+      <div class="detail-top">
+        <span id="detail-kicker">CARD INSPECTOR</span
+        ><button id="close-detail" class="icon-button" aria-label="关闭详情">
+          ✕
+        </button>
+      </div>
+      <div id="detail-content"></div>
+    </aside>
+    <section id="log-panel" hidden>
+      <div>
+        <strong>实时日志</strong><span>完整日志同时写入调试控制台</span
+        ><button id="open-logs" class="subtle">打开日志目录 ↗</button
+        ><button id="close-logs" class="icon-button">✕</button>
+      </div>
+      <pre id="log-output"></pre>
+    </section>
+    <footer id="player" class="player" hidden>
+      <button id="play-pause" class="play-button" aria-label="播放暂停">
+        ▶
+      </button>
+      <div class="now-playing">
+        <b id="track-name"></b><small id="track-info"></small>
+      </div>
+      <canvas
+        id="waveform"
+        width="400"
+        height="42"
+        aria-label="音频波形，点击定位"
+      ></canvas
+      ><span id="track-time">0:00</span
+      ><label class="volume"
+        >音量<input
+          id="volume"
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value="0.75" /></label
+      ><button id="export-track" class="subtle">↓ WAV</button
+      ><button id="stop-player" class="icon-button">✕</button
+      ><audio id="audio"></audio>
+    </footer>
+    <dialog id="image-viewer" aria-label="卡面大图"><div class="viewer-top"><strong id="viewer-title"></strong><button id="viewer-zoom" class="subtle">原始尺寸</button><button id="viewer-close" class="icon-button" aria-label="关闭大图">✕</button></div><div class="viewer-canvas"><img id="viewer-image" alt="卡面大图"></div></dialog>
+    <dialog id="welcome" aria-labelledby="welcome-title"><img src="icon.svg" class="welcome-icon" alt=""><p class="eyebrow">WELCOME TO BOOM LAB</p><h2 id="welcome-title">欢迎来到砰砰解析台</h2><p>选择炉石安装目录，开始探索卡牌原画与声音。</p><p class="note">请选择包含 Data 文件夹的 Hearthstone 目录。</p><div class="path-row"><input id="welcome-path" aria-label="炉石安装目录" placeholder="例如 F:\Games\Hearthstone"><button id="welcome-browse" class="subtle">浏览…</button></div><p id="welcome-error" class="warning" hidden></p><div class="welcome-actions"><button id="welcome-later" class="subtle">稍后设置</button><button id="welcome-connect" class="primary">打开资源工作台 →</button></div></dialog>
+    <div id="toast" role="status" hidden></div>
+  </body>
+</html>
