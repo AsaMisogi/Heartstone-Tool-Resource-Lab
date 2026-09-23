@@ -116,3 +116,18 @@ def test_status_detects_native_load_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(vosk, 'Model', Mock(side_effect=RuntimeError('模型损坏')))
     result = speech.check_status(tmp_path, DEFAULT_CONFIG, lambda message: None)
     assert not result['ok'] and '模型损坏' in result['message']
+
+
+def test_unicode_model_path_restores_working_directory_even_on_failure(tmp_path, monkeypatch):
+    import os
+    import vosk
+    folder = tmp_path / '中文 模型'
+    folder.mkdir()
+    original = os.getcwd()
+    def load(path):
+        assert path == '.' and os.getcwd() == str(folder)
+        raise RuntimeError('损坏的模型')
+    monkeypatch.setattr(vosk, 'Model', load)
+    with pytest.raises(RuntimeError):
+        speech.load_model(folder)
+    assert os.getcwd() == original

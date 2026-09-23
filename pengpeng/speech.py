@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import time
 import sys
+from contextlib import chdir
 from .speech_config import DEFAULT_CONFIG, validate_config
 from urllib.request import urlopen
 import zipfile
@@ -105,19 +106,31 @@ def model_identity(path):
     return digest.hexdigest()
 
 
+def load_model(path):
+    """绕过 Vosk Windows 原生库对中文绝对路径的窄字符处理。
+
+    Python 用 Unicode 切换工作目录，原生库仅接收 ASCII 相对路径 '.'。
+    模型构造同步读取全部资源，完成后恢复目录；音频路径已规范化为绝对路径。
+    仅在串行识别子进程或构建检查进程中调用，不在共享工作目录的线程中调用。
+    """
+    from vosk import Model
+    with chdir(path):
+        return Model('.')
+
+
 def check_status(workspace, config, progress):
     if config['provider'] == 'api':
         from .speech_api import check_api
         progress('正在检查在线 API（发送一秒静音）…')
         return check_api(workspace, config)
-    from vosk import Model, KaldiRecognizer, SetLogLevel
+    from vosk import KaldiRecognizer, SetLogLevel
     SetLogLevel(-1)
     rows = []
     for locale, label in (('zhcn', '简体中文'), ('enus', '英语')):
         try:
             path = selected_model(workspace, locale, config, progress)
             progress(f'正在加载{label}模型，请稍候…')
-            model = Model(str(path))
+            model = load_model(path)
             recognizer = KaldiRecognizer(model, 16000)
             recognizer.AcceptWaveform(b'\0' * 3200)
             recognizer.FinalResult()
@@ -197,7 +210,7 @@ class Recognizer:
             text = ' '.join(part for part in parts if part)
         else:
             try:
-                from vosk import Model, KaldiRecognizer, SetLogLevel
+                from vosk import KaldiRecognizer, SetLogLevel
             except ImportError as exc:
                 raise ValueError('语音识别组件未安装，请运行 Install-Dependencies.bat 后重新启动') from exc
             import numpy as np
@@ -206,7 +219,7 @@ class Recognizer:
             progress('正在加载离线模型…')
             if self.locale != identity:
                 self.model = None  # 切语言先释放旧模型，避免双份常驻。
-                self.model = Model(str(model_path))
+                self.model = load_model(model_path)
                 self.locale = identity
             progress('正在离线识别，结果不保证准确…')
             started, parts = time.monotonic(), []

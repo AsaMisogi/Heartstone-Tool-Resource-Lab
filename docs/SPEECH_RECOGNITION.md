@@ -5,7 +5,7 @@
 ## 三种识别方式
 
 - **内置离线模型（默认）**：免安装包包含中文 vosk-model-small-cn-0.22 和英文 vosk-model-small-en-us-0.15。直接从程序资源目录加载，首次使用无需下载，不上传音频。必须完整解压 ZIP，不能只复制 EXE。源码开发先运行 tools/prepare_models.py。
-- **自定义本地 Vosk 模型**：分别选择中文和英文的模型目录，应直接包含 am/final.mdl 和 conf/model.conf。某语言留空时使用内置模型。支持 Vosk 格式的其他小模型和大模型；Whisper/PyTorch 模型文件不能直接加载，可通过兼容 API 使用。大模型需要更多内存及加载时间。
+- **自定义本地 Vosk 模型**：分别选择中文和英文的模型目录，应直接包含 am/final.mdl 和 conf/model.conf。某语言留空时使用内置模型。支持 Vosk 格式的其他小模型和大模型；Whisper/PyTorch 模型文件不能直接加载，可通过兼容 API 使用。大模型需要更多内存及加载时间。支持中文和空格路径；加载时通过独立进程的工作目录兼容 Vosk 原生库。
 - **在线语音识别 API**：填写完整转写地址、模型 ID、API 密钥。支持 HTTPS，以及本机 localhost/127.0.0.1 的 HTTP 服务。请求为 multipart/form-data，字段为 file（WAV）、model、language（zh/en）、response_format=json；响应须为包含 text 字符串的 JSON。兼容此协议的自建 Whisper 服务或云端服务均可使用；不支持聊天接口及各厂商的其他私有协议。
 
 API 密钥可在界面直接填写、显示、修改或留空清除，随 workspace/settings.json 保存，复制工作区即可迁移。环境变量 PENGPENG_SPEECH_API_KEY 可作为界面未填写时的替代来源。在线模式会将待识别语音发送给用户配置的服务商，可能产生费用；不会因离线模型失败而自动切换在线。
