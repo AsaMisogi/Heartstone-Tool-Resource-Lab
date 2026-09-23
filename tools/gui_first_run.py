@@ -44,7 +44,12 @@ if __name__ == '__main__':
             phase = 1
             window.page.runJavaScript("document.querySelector('#welcome-path').value='F:/Games/Hearthstone';document.querySelector('#welcome-connect').click()")
         elif phase == 1 and value:
-            results.append({'connected': True})
+            window.grab().save(str(output / 'index-guide.png'))
+            results.append({'connected_with_index_guide': True})
+            phase = 3
+            window.page.runJavaScript("document.querySelector('#index-later').click()")
+        elif phase == 3 and value:
+            results.append({'deferred_index': True})
             window.close()
             window = Window(workspace)
             window.show()
@@ -58,6 +63,10 @@ if __name__ == '__main__':
             finish('first-run flow timed out')
             return
         expression = "!!document.querySelector('#welcome')?.open" if phase == 0 else "!!window.pengpeng?.state.status?.ready && !document.querySelector('#welcome').open"
+        if phase == 1:
+            expression += " && document.querySelector('#index-guide').open"
+        elif phase in (2, 3):
+            expression += " && !document.querySelector('#index-guide').open && window.pengpeng.state.status.settings.index_guide_seen"
         window.page.runJavaScript(expression, check)
 
     timer = QTimer()

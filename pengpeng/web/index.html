@@ -45,10 +45,12 @@
           <i id="connection-dot"></i
           ><span id="connection">正在连接本地资源</span>
         </div>
-        <div id="sidebar-version">LOCAL ARCHIVE / 0.2</div>
+        <div id="sidebar-version">BOOM LAB / v0.3.0</div>
         <a href="https://space.bilibili.com/315312"
           >朝禊ASOGI <span>↗</span></a
         >
+        <!-- 普通 HTTPS 链接由桌面宿主交给系统浏览器，不替换本地工作台。 -->
+        <a class="repository-link" href="https://github.com/AsaMisogi/Heartstone-Tool-Resource-Lab" title="在浏览器中打开 GitHub 仓库">GitHub 仓库 <span aria-hidden="true">↗</span></a>
         <p>在一张卡牌背后，发现整个世界。</p>
       </div>
     </aside>
@@ -207,6 +209,13 @@
     </footer>
     <dialog id="image-viewer" aria-label="卡面大图"><div class="viewer-top"><strong id="viewer-title"></strong><button id="viewer-zoom" class="subtle">原始尺寸</button><button id="viewer-close" class="icon-button" aria-label="关闭大图">✕</button></div><div class="viewer-canvas"><img id="viewer-image" alt="卡面大图"></div></dialog>
     <dialog id="welcome" aria-labelledby="welcome-title"><img src="icon.svg" class="welcome-icon" alt=""><p class="eyebrow">WELCOME TO BOOM LAB</p><h2 id="welcome-title">欢迎来到砰砰解析台</h2><p>选择炉石安装目录，开始探索卡牌原画与声音。</p><p class="note">请选择包含 Data 文件夹的 Hearthstone 目录。</p><div class="path-row"><input id="welcome-path" aria-label="炉石安装目录" placeholder="例如 F:\Games\Hearthstone"><button id="welcome-browse" class="subtle">浏览…</button></div><p id="welcome-error" class="warning" hidden></p><div class="welcome-actions"><button id="welcome-later" class="subtle">稍后设置</button><button id="welcome-connect" class="primary">打开资源工作台 →</button></div></dialog>
+    <dialog id="index-guide" aria-labelledby="index-guide-title">
+      <p class="eyebrow">RESOURCE INDEX</p><h2 id="index-guide-title">让资源查找更顺畅</h2>
+      <p>建议建立完整资源索引，方便搜索全部声音、纹理与特效。</p>
+      <p>这会读取大量本地文件，可能花费较长时间，具体取决于客户端大小和磁盘速度。可以暂停，下次继续。</p>
+      <p class="note">暂时不建立也能查看卡牌、按需读取语音。首次定位复杂资源仍可能明显慢于已有索引的情况。随时可以点击右上角「建立完整资源索引」按钮开始或继续。</p>
+      <div class="welcome-actions"><button id="index-later" class="subtle" autofocus>暂不建立，先看卡牌</button><button id="index-start" class="primary">开始建立索引</button></div>
+    </dialog>
     <div id="toast" role="status" hidden></div>
   </body>
 </html>

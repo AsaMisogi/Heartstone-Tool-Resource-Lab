@@ -9,12 +9,14 @@ if not exist ".venv\Scripts\python.exe" (
 )
 where uv >nul 2>nul
 if not errorlevel 1 (
-    uv pip install --python .venv\Scripts\python.exe --cache-dir .cache\uv pyinstaller==6.19.0
+    uv pip install --python .venv\Scripts\python.exe --cache-dir .cache\uv -r requirements.lock pyinstaller==6.19.0
 ) else (
-    .venv\Scripts\python.exe -m pip install pyinstaller==6.19.0
+    .venv\Scripts\python.exe -m pip install -r requirements.lock pyinstaller==6.19.0
 )
 if errorlevel 1 goto :failed
-.venv\Scripts\python.exe -m PyInstaller --noconfirm PengPengWorkbench.spec
+.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm PengPengWorkbench.spec
+if errorlevel 1 goto :failed
+.venv\Scripts\python.exe tools\prepare_release.py
 if errorlevel 1 goto :failed
 echo 构建输出：dist\砰砰解析台\砰砰解析台.exe
 echo 请携带整个 砰砰解析台 文件夹，不要只复制 EXE。

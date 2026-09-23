@@ -279,6 +279,8 @@ async function initialize(path) {
     $("#jobbar").hidden = true;
     renderFilters();
     await refresh();
+    // 首次连接后才提示；用户选择会持久保存，重启不反复打扰。
+    if (!s.settings.index_guide_seen && s.indexed < s.bundles) $("#index-guide").showModal();
     return true;
   } catch (e) {
     $("#jobbar").hidden = true;
@@ -1005,7 +1007,7 @@ function renderSettings() {
     export_path: "",
   };
   $("#settings-page").innerHTML =
-    `<div class="setting"><label>炉石安装目录</label><div class="path-row"><input id="game-path" value="${esc(s.game_path)}" aria-label="炉石目录"><button id="browse-game" class="subtle">浏览…</button><button id="connect-game" class="primary">连接</button></div><p>读取 Data/Win 与 Strings；无需运行游戏，不修改安装文件。</p></div><div class="setting"><label>导出位置</label><div class="path-row"><input id="export-path" value="${esc(s.export_path)}" aria-label="导出目录"><button id="browse-export" class="subtle">浏览…</button><button id="save-export" class="subtle">保存</button></div><p>每次导出新建目录，避免覆盖已有作品。缓存与日志保存在工具的 workspace 文件夹。</p></div><div class="setting"><label>资源索引与诊断</label><p>索引覆盖本地资源包。未安装语言包的声音无法读取；卡牌文本可切换本地 DBF 内的语言。扫描支持断点继续，游戏更新后按文件指纹使用新快照。</p><button id="diagnostics" class="subtle">查看索引诊断</button><div id="diagnostics-result"></div></div><div class="setting"><label>关于砰砰解析台 BOOM LAB</label><p>版本 0.2.0 · 作者 朝禊ASOGI<br>参考 Hermes 的资源清单解析思路，独立实现可视化工作台。游戏美术与声音属于相应权利人，发布代码不包含游戏素材。</p><a href="https://space.bilibili.com/315312" class="subtle">B站 · 朝禊ASOGI ↗</a><p>原画与声音读取本地资源；完整卡面按需从 HearthstoneJSON 获取并缓存。特效为实验性二维预览，完整 Unity 运行时渲染尚未实现。</p></div>`;
+    `<div class="setting"><label>炉石安装目录</label><div class="path-row"><input id="game-path" value="${esc(s.game_path)}" aria-label="炉石目录"><button id="browse-game" class="subtle">浏览…</button><button id="connect-game" class="primary">连接</button></div><p>读取 Data/Win 与 Strings；无需运行游戏，不修改安装文件。</p></div><div class="setting"><label>导出位置</label><div class="path-row"><input id="export-path" value="${esc(s.export_path)}" aria-label="导出目录"><button id="browse-export" class="subtle">浏览…</button><button id="save-export" class="subtle">保存</button></div><p>每次导出新建目录，避免覆盖已有作品。缓存与日志保存在工具的 workspace 文件夹。</p></div><div class="setting"><label>资源索引与诊断</label><p>索引覆盖本地资源包。未安装语言包的声音无法读取；卡牌文本可切换本地 DBF 内的语言。扫描支持断点继续，游戏更新后按文件指纹使用新快照。</p><button id="diagnostics" class="subtle">查看索引诊断</button><div id="diagnostics-result"></div></div><div class="setting"><label>关于砰砰解析台 BOOM LAB</label><p>版本 0.3.0 · 作者 朝禊ASOGI<br>参考 Hermes 的资源清单解析思路，独立实现可视化工作台。游戏美术与声音属于相应权利人，发布代码不包含游戏素材。</p><div class="about-links"><a href="https://github.com/AsaMisogi/Heartstone-Tool-Resource-Lab" class="subtle repository-link" title="在浏览器中打开 GitHub 仓库">GitHub · 源码与反馈 ↗</a><a href="https://space.bilibili.com/315312" class="subtle">B站 · 朝禊ASOGI ↗</a></div><p>原画与声音读取本地资源；完整卡面按需从 HearthstoneJSON 获取并缓存。特效为实验性二维预览，完整 Unity 运行时渲染尚未实现。</p></div>`;
   $("#browse-game").onclick = () =>
     host.chooseDirectory("game", (p) => {
       if (p) $("#game-path").value = p;
@@ -1232,13 +1234,26 @@ $("#favorites").onclick = guarded(() => {
   state.offset = 0;
   return refresh();
 });
-$("#scan-button").onclick = guarded(async () => {
+async function startScan() {
   await api("scan");
   state.scanning = true;
   $("#scan-button").disabled = true;
   $("#jobbar").hidden = false;
-});
+}
+$("#scan-button").onclick = guarded(startScan);
 $("#cancel-scan").onclick = guarded(() => api("cancel_scan"));
+async function dismissIndexGuide(start) {
+  if (start) await startScan();
+  const settings = await api("save_settings", {index_guide_seen: true});
+  state.status.settings = settings;
+  $("#index-guide").close();
+}
+$("#index-later").onclick = guarded(() => dismissIndexGuide(false));
+$("#index-start").onclick = guarded(() => dismissIndexGuide(true));
+$("#index-guide").addEventListener("cancel", e => {
+  e.preventDefault();
+  guarded(() => dismissIndexGuide(false))();
+});
 $("#close-detail").onclick = closeDetail;
 $("#logs-toggle").onclick = () => {
   $("#log-panel").hidden = !$("#log-panel").hidden;

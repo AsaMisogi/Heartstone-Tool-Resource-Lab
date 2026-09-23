@@ -13,6 +13,7 @@ from pathlib import Path
 import UnityPy
 
 from .common import guid, references
+from .bundle import BundleDirectory, UnsupportedBundle
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ class UnityReader:
         self.cache = OrderedDict()
         self.cabs = {r['name']: r['bundle'] for r in store.db.execute('SELECT * FROM cabs')}
         self.file_bundle = {}
+        self.directories = {}
         UnityPy.config.FALLBACK_UNITY_VERSION = '6000.3.11f1'
         env = self.load('asset_manifest.unity3d')
         def read(suffix):
@@ -57,7 +59,13 @@ class UnityReader:
         if not path.is_file():
             raise FileNotFoundError(f'本地未安装资源包：{bundle}')
         log.debug('读取资源包 %s (%.1f MB)', bundle, path.stat().st_size / 1048576)
-        env = UnityPy.load(str(path))
+        try:
+            directory = self.directory(bundle, path)
+            env = directory.environment()
+            # 目录常驻，解压块只属于最近加载的环境，避免全索引缓存所有正文。
+            directory.cache.clear()
+        except UnsupportedBundle:
+            env = UnityPy.load(str(path))
         def register(file):
             if isinstance(file, UnityPy.files.SerializedFile):
                 name = Path(file.name).name.lower()
@@ -69,10 +77,30 @@ class UnityReader:
         for file in env.files.values():
             register(file)
         self.cache[bundle] = env
-        # Unity 资源包可能很大；限制缓存数量，避免全局单例永久保留所有纹理。
-        while len(self.cache) > 4:
-            self.cache.popitem(last=False)
+        # 复杂皮肤会交错访问多个预制体。按需读取后可保留更大的元数据热集合，
+        # 同时限制序列化数据总量；旧格式整包加载仍按大包计费、尽快淘汰。
+        def weight(name):
+            record = self.directories.get(name)
+            return sum(size for _, _, size, flags in record[1].nodes if flags & 4) if record else 64 * 1024 * 1024
+        while len(self.cache) > 1 and (len(self.cache) > 24 or sum(weight(name) for name in self.cache) > 64 * 1024 * 1024):
+            old, _ = self.cache.popitem(last=False)
+            if old in self.directories:
+                self.directories[old][1].cache.clear()
         return env
+
+    def directory(self, bundle, path=None):
+        """只读压缩目录定位 CAB，首次找引用不再试着解压每个依赖包。"""
+        path = path or self.root / bundle
+        stat = path.stat()
+        stamp = (stat.st_size, stat.st_mtime_ns)
+        previous = self.directories.get(bundle)
+        if previous is None or previous[0] != stamp:
+            directory = BundleDirectory(path)
+            self.directories[bundle] = (stamp, directory)
+            for name, _, _, flags in directory.nodes:
+                if flags & 4:
+                    self.cabs[Path(name).name.lower()] = bundle
+        return self.directories[bundle][1]
 
     def source_paths(self):
         """同时收录 AssetBundle 与 Unity Player 内置资源，避免遗漏界面音效。"""
@@ -119,14 +147,20 @@ class UnityReader:
             owner = self.file_bundle.get(file.name.lower(), self.cabs.get(file.name.lower()))
             for dependency in self.dependencies.get(owner, []):
                 if (self.root / dependency).exists():
-                    self.load(dependency)
+                    try:
+                        self.directory(dependency)
+                    except UnsupportedBundle:
+                        self.load(dependency)
                 if target in self.cabs:
                     break
         if target not in self.cabs:
             raise FileNotFoundError(f'外部资源未安装或无法定位：{target}')
         env = self.load(self.cabs[target])
-        for candidate in env.objects:
-            if candidate.path_id == pathid and candidate.assets_file.name.lower() == target:
+        # CAB + pathID 已是精确地址，不再为每条引用枚举全包对象。
+        candidate_file = env.get_cab(target)
+        if candidate_file is not None and hasattr(candidate_file, 'objects'):
+            candidate = candidate_file.objects.get(pathid)
+            if candidate is not None:
                 return candidate
         raise KeyError(f'CAB 中没有对象 {pathid}: {target}')
 

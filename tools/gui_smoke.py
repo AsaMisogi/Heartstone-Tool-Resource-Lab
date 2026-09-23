@@ -4,6 +4,7 @@
 必须在 Windows 桌面中运行；受限无桌面沙箱无法启动 Chromium 渲染器。
 """
 import json
+import argparse
 import multiprocessing as mp
 from pathlib import Path
 import sys
@@ -18,7 +19,10 @@ if __name__ == '__main__':
     mp.freeze_support()
     job = own_process_tree()
     app = QApplication([])
-    window = Window(Path('workspace').resolve())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--workspace', type=Path, default=Path('workspace'))
+    args = parser.parse_args()
+    window = Window(args.workspace.resolve())
     window.show()
     output = Path('.cache/qa')
     output.mkdir(parents=True, exist_ok=True)

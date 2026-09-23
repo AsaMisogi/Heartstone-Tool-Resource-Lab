@@ -63,7 +63,7 @@ class Service:
         self.cache = None
         self.settings_path = self.workspace / 'settings.json'
         self.settings = {'game_path': '', 'locale': 'zhcn', 'paired_audio': False, 'general_audio': False, 'infinite_scroll': False, 'page_size': 24, 'online_transcripts': True, 'transcript_sources': [dict(s) for s in DEFAULT_SOURCES],
-                         'speech_recognition': True, 'source_defaults_version': 0,
+                         'speech_recognition': True, 'source_defaults_version': 0, 'index_guide_seen': False,
                          'mix_voice_export': False, 'view_state': {}, 'ui_scale': 1.0, 'font_scale': 1.0,
                          'export_path': str(self.workspace / 'exports')}
         if self.settings_path.exists():
@@ -443,6 +443,9 @@ class Service:
                 self.card_voices.clear()
             started = time.monotonic()
             try:
+                # 扫描发现文件更新时，不能复用预览曾加载的旧环境。
+                if previous and hasattr(self.reader, 'cache'):
+                    self.reader.cache.pop(bundle_name, None)
                 env = self.reader.load(bundle_name)
                 containers = {}
                 for key, pointer in env.container.items():
@@ -454,7 +457,8 @@ class Service:
                     container = containers.get((obj.assets_file.name, obj.path_id), '')
                     if kind != 'AudioClip' and not (container and kind in ('GameObject', 'Texture2D', 'VideoClip')):
                         continue
-                    tree = obj.read_typetree()
+                    # 纹理的类型树可能包含整幅像素；索引仅需名称，不能把正文读进来。
+                    tree = obj.read_typetree() if kind == 'AudioClip' else {'m_Name': obj.peek_name() or container}
                     name = tree.get('m_Name', container)
                     category = audio_category(name, bundle_name) if kind == 'AudioClip' else bundle_name.split('_')[0]
                     assetid = hashlib.sha256(f'{bundle_name}:{obj.path_id}'.encode()).hexdigest()[:24]
@@ -574,7 +578,8 @@ class Service:
                 errors.append(str(exc))
                 break
             if obj.type.name == 'AudioClip':
-                name = obj.read().m_Name
+                audio = obj.read()
+                name = audio.m_Name
                 bundle = self.reader.cabs[Path(obj.assets_file.name).name.lower()]
                 identity = hashlib.sha256(f'{bundle}:{obj.path_id}'.encode()).hexdigest()[:24]
                 if identity in seen:
@@ -582,7 +587,7 @@ class Service:
                 seen.add(identity)
                 actual_locale = bundle_locale(bundle)
                 rows.append((identity, bundle, str(obj.path_id), '', name, 'AudioClip',
-                    audio_category(name, bundle), actual_locale, obj.read().m_Length))
+                    audio_category(name, bundle), actual_locale, audio.m_Length))
                 # 语音严格匹配实际包语言，不把缺失语言回退后的基础音频冒充目标语言。
                 if audio_category(name, bundle) == '角色语音' and actual_locale not in (locale, 'global'):
                     continue

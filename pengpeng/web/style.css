@@ -1023,6 +1023,8 @@ dialog { color:var(--text); border:1px solid #566477; background:linear-gradient
 dialog::backdrop { background:#050a13cc; backdrop-filter:blur(6px); }
 dialog[open] { animation:fade-in .18s ease; }
 #welcome { width:min(570px,90vw); }
+#index-guide { width:min(570px,90vw); }
+#index-guide p { line-height:1.8; }
 .welcome-icon { width:70px; height:70px; }
 #welcome h2 { font-size:1.9286rem; }
 #welcome p { line-height:1.8; }
@@ -1215,3 +1217,15 @@ summary { cursor:pointer; color:#cad7e6; padding:4px 0; }
   .catalog-list .tile-info > * { grid-column:1; }
   .catalog-list .card-image { width:64px; height:64px; margin:6px; }
 }
+
+/* 仓库入口沿用现有暗色按钮；设置页允许换行，兼容字体放大和窄窗口。 */
+.side-bottom .repository-link {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #191c23;
+}
+.about-links { display:flex; flex-wrap:wrap; gap:12px; margin:16px 0; }
+.about-links a { display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:8px; }
+.repository-link:hover, .about-links a:hover { border-color:var(--accent); color:var(--accent); }
