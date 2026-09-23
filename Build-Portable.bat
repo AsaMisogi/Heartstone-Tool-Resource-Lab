@@ -14,6 +14,8 @@ if not errorlevel 1 (
     .venv\Scripts\python.exe -m pip install -r requirements.lock pyinstaller==6.19.0
 )
 if errorlevel 1 goto :failed
+.venv\Scripts\python.exe -X utf8 tools\prepare_models.py
+if errorlevel 1 goto :failed
 .venv\Scripts\python.exe -m PyInstaller --clean --noconfirm PengPengWorkbench.spec
 if errorlevel 1 goto :failed
 .venv\Scripts\python.exe tools\prepare_release.py

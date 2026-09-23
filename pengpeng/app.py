@@ -99,14 +99,18 @@ class Bridge(QObject):
     def request(self, encoded):
         try:
             data = json.loads(encoded)
-            if data.get('method') == 'speech':
+            if data.get('method') in ('speech', 'speech_status'):
                 self.speech.request(data)
                 return
             if data.get('method') == 'cancel_speech':
                 self.speech.stop()
                 self.response.emit(json.dumps({'id': data['id'], 'result': {}}))
                 return
-            if data.get('method') == 'initialize' or (data.get('method') == 'save_settings' and data.get('params', {}).get('speech_recognition') is False):
+            params = data.get('params', {})
+            # 配置改变时终止旧任务，避免旧模型结果覆盖新配置下的界面。
+            speech_changed = (params.get('speech_recognition') is False
+                              or 'speech_config' in params or 'speech_api_key' in params)
+            if data.get('method') == 'initialize' or (data.get('method') == 'save_settings' and speech_changed):
                 self.speech.stop()
             if data.get('method') == 'transcript_browser':
                 if getattr(self, 'transcript_dialog', None) is not None:
@@ -162,7 +166,7 @@ class Bridge(QObject):
 
     @Slot(str, result=str)
     def chooseDirectory(self, purpose):
-        title = '选择炉石安装目录' if purpose == 'game' else '选择导出目录'
+        title = {'game': '选择炉石安装目录', 'speech': '选择解压后的 Vosk 模型目录'}.get(purpose, '选择导出目录')
         return QFileDialog.getExistingDirectory(self.window, title)
 
     @Slot(str)

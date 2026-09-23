@@ -189,6 +189,7 @@ function receive(encoded) {
     return;
   }
   if (data.event === "speech_progress") {
+    if ($("#speech-status-result") && pending.has(data.request_id)) $("#speech-status-result").textContent = data.message;
     if (state.speechRun?.generation === state.detailGeneration && pending.has(data.request_id)) {
       state.speechNote = data.message;
       renderVoiceList();
@@ -1007,7 +1008,7 @@ function renderSettings() {
     export_path: "",
   };
   $("#settings-page").innerHTML =
-    `<div class="setting"><label>炉石安装目录</label><div class="path-row"><input id="game-path" value="${esc(s.game_path)}" aria-label="炉石目录"><button id="browse-game" class="subtle">浏览…</button><button id="connect-game" class="primary">连接</button></div><p>读取 Data/Win 与 Strings；无需运行游戏，不修改安装文件。</p></div><div class="setting"><label>导出位置</label><div class="path-row"><input id="export-path" value="${esc(s.export_path)}" aria-label="导出目录"><button id="browse-export" class="subtle">浏览…</button><button id="save-export" class="subtle">保存</button></div><p>每次导出新建目录，避免覆盖已有作品。缓存与日志保存在工具的 workspace 文件夹。</p></div><div class="setting"><label>资源索引与诊断</label><p>索引覆盖本地资源包。未安装语言包的声音无法读取；卡牌文本可切换本地 DBF 内的语言。扫描支持断点继续，游戏更新后按文件指纹使用新快照。</p><button id="diagnostics" class="subtle">查看索引诊断</button><div id="diagnostics-result"></div></div><div class="setting"><label>关于砰砰解析台 BOOM LAB</label><p>版本 0.3.0 · 作者 朝禊ASOGI<br>参考 Hermes 的资源清单解析思路，独立实现可视化工作台。游戏美术与声音属于相应权利人，发布代码不包含游戏素材。</p><div class="about-links"><a href="https://github.com/AsaMisogi/Heartstone-Tool-Resource-Lab" class="subtle repository-link" title="在浏览器中打开 GitHub 仓库">GitHub · 源码与反馈 ↗</a><a href="https://space.bilibili.com/315312" class="subtle">B站 · 朝禊ASOGI ↗</a></div><p>原画与声音读取本地资源；完整卡面按需从 HearthstoneJSON 获取并缓存。特效为实验性二维预览，完整 Unity 运行时渲染尚未实现。</p></div>`;
+    `<div class="setting"><label>炉石安装目录</label><div class="path-row"><input id="game-path" value="${esc(s.game_path)}" aria-label="炉石目录"><button id="browse-game" class="subtle">浏览…</button><button id="connect-game" class="primary">连接</button></div><p>读取 Data/Win 与 Strings；无需运行游戏，不修改安装文件。</p></div><div class="setting"><label>导出位置</label><div class="path-row"><input id="export-path" value="${esc(s.export_path)}" aria-label="导出目录"><button id="browse-export" class="subtle">浏览…</button><button id="save-export" class="subtle">保存</button></div><p>每次导出新建目录，避免覆盖已有作品。缓存与日志保存在工具的 workspace 文件夹。</p></div><div class="setting"><label>资源索引与诊断</label><p>索引覆盖本地资源包。未安装语言包的声音无法读取；卡牌文本可切换本地 DBF 内的语言。扫描支持断点继续，游戏更新后按文件指纹使用新快照。</p><button id="diagnostics" class="subtle">查看索引诊断</button><div id="diagnostics-result"></div></div><div class="setting"><label>关于砰砰解析台 BOOM LAB</label><p>版本 0.4.0 · 作者 朝禊ASOGI<br>参考 Hermes 的资源清单解析思路，独立实现可视化工作台。游戏美术与声音属于相应权利人，发布代码不包含游戏素材。</p><div class="about-links"><a href="https://github.com/AsaMisogi/Heartstone-Tool-Resource-Lab" class="subtle repository-link" title="在浏览器中打开 GitHub 仓库">GitHub · 源码与反馈 ↗</a><a href="https://space.bilibili.com/315312" class="subtle">B站 · 朝禊ASOGI ↗</a></div><p>原画与声音读取本地资源；完整卡面按需从 HearthstoneJSON 获取并缓存。特效为实验性二维预览，完整 Unity 运行时渲染尚未实现。</p></div>`;
   $("#browse-game").onclick = () =>
     host.chooseDirectory("game", (p) => {
       if (p) $("#game-path").value = p;
@@ -1031,7 +1032,80 @@ function renderSettings() {
   $("#settings-page").insertAdjacentHTML("afterbegin", `<div class="setting"><label><input id="infinite-scroll" type="checkbox" ${state.infiniteScroll ? "checked" : ""}> 滚动加载更多</label><p>默认关闭。开启后，滚动至列表底部自动追加内容，隐藏页码跳转；每次加载数量由列表下方设置。</p></div>`);
   $("#settings-page").insertAdjacentHTML("afterbegin", `<div class="setting"><label><input id="online-transcripts" type="checkbox" ${s.online_transcripts !== false ? "checked" : ""}> 按需补充公开台词</label><p>本地字幕优先；缺失时按下方顺序查询已启用来源，失败或未命中则继续补齐，缓存结果并显示来源。支持按音频键精确匹配简中字幕；Wiki 仅补充可唯一匹配的基础事件。关闭后不发起查询。</p></div>`);
   // 独立保存来源列表，开关、顺序与新增操作共享后端校验和持久化。
-  $("#settings-page").insertAdjacentHTML("afterbegin", `<div class="setting"><label><input id="speech-recognition" type="checkbox" ${s.speech_recognition !== false ? "checked" : ""}> 缺失台词自动语音识别</label><p>现有台词来源未命中时，离线识别简中 / 英语短语音。首次使用每种语言下载约 40–42 MB 小模型；不上传音频、不使用显卡。逐条处理，闲置 15 秒释放模型；关闭后立即停止。其他语言暂不识别。</p><p>识别文字会标明“不保证准确性”，可逐条重试。笑声、音效及特殊角色声线可能无法正确识别。</p></div>`);
+  $("#settings-page").insertAdjacentHTML("afterbegin", `<div class="setting"><label><input id="speech-recognition" type="checkbox" ${s.speech_recognition !== false ? "checked" : ""}> 缺失台词自动语音识别</label><p>现有台词来源未命中时，识别简中 / 英语短语音。默认使用随包内置模型，无需下载、不上传音频、不使用显卡。逐条处理，闲置 15 秒释放模型；关闭后立即停止。其他语言暂不识别。</p><p>识别文字会标明“不保证准确性”，可逐条重试。笑声、音效及特殊角色声线可能无法正确识别。</p></div>`);
+
+  // 配置与检查分开：输入未保存时，检查按钮明确要求先保存，避免检查旧配置。
+  const sc = s.speech_config || {provider: "bundled"};
+  $("#speech-recognition").closest(".setting").insertAdjacentHTML("beforeend", `
+    <div class="speech-config">
+      <label for="speech-provider">识别方式</label>
+      <select id="speech-provider">
+        <option value="bundled">内置离线模型（推荐）</option>
+        <option value="local">自定义本地 Vosk 模型</option>
+        <option value="api">在线语音识别 API</option>
+      </select>
+      <div id="speech-local-fields">
+        <p>选择解压后直接包含 am 和 conf 的 Vosk 模型目录；留空的语言继续使用内置模型。Whisper 等其他模型请通过兼容 API 使用。</p>
+        ${["zhcn", "enus"].map((locale, index) => `<label for="speech-${locale}">${index ? "英语" : "简体中文"}模型</label><div class="path-row"><input id="speech-${locale}" value="${esc(sc[locale + "_path"] || "")}" placeholder="留空使用内置模型"><button type="button" data-model-browse="${locale}" class="subtle">浏览…</button></div>`).join("")}
+      </div>
+      <div id="speech-api-fields">
+        <p class="note">在线模式会将待识别音频发送给你配置的服务商，可能产生费用。支持兼容 multipart 音频转写接口；不会在离线失败时自动切换在线。</p>
+        <label for="speech-url">完整转写地址</label>
+        <input id="speech-url" value="${esc(sc.api_url || "")}" placeholder="https://服务商域名/v1/audio/transcriptions" spellcheck="false">
+        <label for="speech-model">API 模型名称</label>
+        <input id="speech-model" value="${esc(sc.api_model || "")}" placeholder="填写服务商提供的语音模型 ID" spellcheck="false">
+        <label for="speech-key">API 密钥</label>
+        <div class="path-row"><input id="speech-key" type="password" autocomplete="off" value="${esc(s.speech_api_key || "")}" placeholder="填写服务商提供的 API 密钥"><button id="show-speech-key" type="button" class="subtle">显示</button></div>
+        <p>密钥随本地设置保存，迁移 workspace 后可继续使用；留空并保存即可清除。也可使用 PENGPENG_SPEECH_API_KEY 环境变量。</p>
+        <p>点击状态检查会向该地址发送一秒静音以验证连接、认证与模型，也可能计费。</p>
+      </div>
+      <div class="path-row"><button id="save-speech-config" class="primary">保存语音配置</button><button id="check-speech-status" class="subtle">语音模型状态检查</button></div>
+      <p id="speech-status-result" role="status" aria-live="polite">保存配置后可检查模型是否能够实际加载。</p>
+    </div>`);
+  $("#show-speech-key").onclick = () => {
+    const input = $("#speech-key");
+    input.type = input.type === "password" ? "text" : "password";
+    $("#show-speech-key").textContent = input.type === "password" ? "显示" : "隐藏";
+  };
+  $("#speech-provider").value = sc.provider;
+  const showSpeechFields = () => {
+    $("#speech-local-fields").hidden = $("#speech-provider").value !== "local";
+    $("#speech-api-fields").hidden = $("#speech-provider").value !== "api";
+  };
+  showSpeechFields();
+  let speechDirty = false;
+  document.querySelectorAll(".speech-config input, .speech-config select").forEach(input => {
+    input.oninput = () => { speechDirty = true; showSpeechFields(); };
+  });
+  document.querySelectorAll("[data-model-browse]").forEach(button => {
+    button.onclick = () => host.chooseDirectory("speech", path => {
+      if (path) { $("#speech-" + button.dataset.modelBrowse).value = path; speechDirty = true; }
+    });
+  });
+  $("#save-speech-config").onclick = guarded(async () => {
+    const button = $("#save-speech-config");
+    button.disabled = true;
+    try {
+      const config = {provider: $("#speech-provider").value, zhcn_path: $("#speech-zhcn").value,
+        enus_path: $("#speech-enus").value, api_url: $("#speech-url").value, api_model: $("#speech-model").value};
+      const params = {speech_config: config, speech_api_key: $("#speech-key").value};
+      cancelSpeech();
+      state.status.settings = await api("save_settings", params);
+      renderSettings();
+      $("#speech-status-result").textContent = "配置已保存。点击状态检查验证当前模型。";
+    } finally { button.disabled = false; }
+  });
+  $("#check-speech-status").onclick = async () => {
+    const button = $("#check-speech-status"), result = $("#speech-status-result");
+    if (speechDirty) { result.textContent = "配置尚未保存，请先保存后再检查。"; return; }
+    button.disabled = true;
+    result.textContent = "正在检查，请稍候…";
+    try {
+      const checked = await api("speech_status");
+      result.textContent = (checked.ok ? "✓ " : "检查未通过：\n") + checked.message;
+    } catch (error) { result.textContent = "检查失败：" + error.message; }
+    finally { button.disabled = false; }
+  };
   $("#speech-recognition").onchange = guarded(async () => {
     const box = $("#speech-recognition"), enabled = box.checked;
     try {
@@ -1624,7 +1698,7 @@ async function recognizeMissing(generation, retryId = null) {
       if (!active()) return;
       // 网络来源重试可能在等待期间补齐文字；识别永远不盖过已有台词。
       if (state.voiceItems.some(a => a.id === item.id && a.text)) continue;
-      state.speechNote = `正在准备离线识别 ${++completed} / ${items.length}；试听与导出可继续使用…`;
+      state.speechNote = `正在准备语音识别 ${++completed} / ${items.length}；试听与导出可继续使用…`;
       renderVoiceList();
       try {
         const audioData = await api("audio", {assetid: item.id, locale});
@@ -1642,7 +1716,7 @@ async function recognizeMissing(generation, retryId = null) {
         return;
       }
     }
-    if (active()) state.speechNote = "离线识别完成；语音识别文字仅供参考，不保证准确性。";
+    if (active()) state.speechNote = "语音识别完成；语音识别文字仅供参考，不保证准确性。";
   } finally {
     if (active()) { state.speechRun = null; renderVoiceList(); }
   }

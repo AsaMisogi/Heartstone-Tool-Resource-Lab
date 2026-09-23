@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pengpeng-asogi"
-version = "0.3.0"
+version = "0.4.0"
 description = "砰砰解析台 · 炉石本地资源工作台"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12,<3.14"
 authors = [{name = "朝禊ASOGI"}]
-dependencies = ["UnityPy==1.25.2", "PySide6==6.10.2", "soundfile==0.13.1", "vosk==0.3.45"]
+dependencies = ["UnityPy==1.25.2", "PySide6==6.10.2", "soundfile==0.13.1", "vosk==0.3.45", "requests==2.34.2"]
 
 [project.urls]
 Homepage = "https://github.com/AsaMisogi/Heartstone-Tool-Resource-Lab"

@@ -47,7 +47,9 @@ pyside6-essentials==6.10.2
     #   pyside6
     #   pyside6-addons
 requests==2.34.2
-    # via vosk
+    # via
+    #   -r requirements.txt
+    #   vosk
 shiboken6==6.10.2
     # via
     #   pyside6

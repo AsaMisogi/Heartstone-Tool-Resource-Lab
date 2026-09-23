@@ -5,6 +5,8 @@ import multiprocessing as mp
 from pathlib import Path
 import sys
 import time
+import tempfile
+import shutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pengpeng.service import Service
@@ -40,10 +42,22 @@ if __name__ == '__main__':
     service.initialize()
     rows = service.store.db.execute("SELECT id,name FROM assets WHERE category='角色语音' AND locale='zhcn' AND duration BETWEEN 2 AND 8 ORDER BY name LIMIT 4").fetchall()
     messages, results = [], []
-    controller = SpeechProcess(service.workspace, messages.append)
+    assert rows, '本机索引中没有可测试的中文语音'
+    output = Path('.cache/qa-speech')
+    output.mkdir(parents=True, exist_ok=True)
+    speech_workspace = Path(tempfile.mkdtemp(prefix='workspace-', dir=output)).resolve()
+    Service(speech_workspace).save_settings(speech_recognition=True)
+    (speech_workspace / 'cache').mkdir()
+    controller = SpeechProcess(speech_workspace, messages.append)
     try:
         for index, row in enumerate(rows):
             samples = service.audio(assetid=row['id'])['samples']
+            # 识别配置与缓存隔离，尊重用户关闭识别或已配置在线 API 的设置。
+            for sample in samples:
+                source = Path(sample['path'])
+                target = speech_workspace / 'cache' / source.name
+                shutil.copy2(source, target)
+                sample['path'] = str(target)
             start = time.monotonic()
             controller.request({'id': index + 1, 'params': {'paths': [s['path'] for s in samples], 'locale': 'zhcn', 'force': True}})
             while controller.request_id is not None:

@@ -1229,3 +1229,9 @@ summary { cursor:pointer; color:#cad7e6; padding:4px 0; }
 .about-links { display:flex; flex-wrap:wrap; gap:12px; margin:16px 0; }
 .about-links a { display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:8px; }
 .repository-link:hover, .about-links a:hover { border-color:var(--accent); color:var(--accent); }
+/* 语音设置沿用现有卡片风格，长路径在窄窗口中可换行。 */
+.speech-config { display:grid; gap:12px; margin-top:18px; max-width:900px; }
+.speech-config > select, .speech-config input:not([type=checkbox]) { width:100%; min-width:0; }
+.speech-config label { display:block; margin:8px 0; }
+.speech-config [hidden] { display:none; }
+#speech-status-result { white-space:pre-wrap; overflow-wrap:anywhere; }

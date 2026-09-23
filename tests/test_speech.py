@@ -53,7 +53,9 @@ def test_cache_force_empty_and_content_identity(tmp_path, monkeypatch):
     import vosk
     model = Mock()
     monkeypatch.setattr(vosk, 'Model', model)
-    monkeypatch.setattr(speech, 'ensure_model', Mock(return_value=tmp_path))
+    model_dir = tmp_path / 'model'
+    model_dir.mkdir()
+    monkeypatch.setattr(speech, 'ensure_model', Mock(return_value=model_dir))
     recognizer = Mock()
     recognizer.AcceptWaveform.return_value = False
     recognizer.FinalResult.return_value = json.dumps({'text': '测 试'})
@@ -76,7 +78,9 @@ def test_cache_force_empty_and_content_identity(tmp_path, monkeypatch):
 def test_multisample_preserved(tmp_path, monkeypatch):
     import vosk
     monkeypatch.setattr(vosk, 'Model', Mock())
-    monkeypatch.setattr(speech, 'ensure_model', Mock(return_value=tmp_path))
+    model_dir = tmp_path / 'model'
+    model_dir.mkdir()
+    monkeypatch.setattr(speech, 'ensure_model', Mock(return_value=model_dir))
     recognizer = Mock()
     recognizer.AcceptWaveform.return_value = False
     recognizer.FinalResult.side_effect = ['{"text":"first"}', '{"text":"second"}']
@@ -91,7 +95,7 @@ def test_model_download_rejects_zip_escape_and_cleans_partial(tmp_path, monkeypa
         zipped.writestr('../escaped.txt', 'bad')
     monkeypatch.setattr(speech, 'urlopen', lambda *a, **kw: io.BytesIO(content.getvalue()))
     with pytest.raises(ValueError, match='路径异常'):
-        speech.ensure_model(tmp_path, 'zhcn')
+        speech.download_model(tmp_path, 'zhcn')
     assert not (tmp_path / 'escaped.txt').exists()
     assert not list((tmp_path / 'models').glob('*.part'))
 

@@ -29,6 +29,7 @@ from PIL import Image
 from .images import crop_preview
 from .unity import UnityReader
 from .transcript_sources import DEFAULT_SOURCES, validate_sources, migrate_sources
+from .speech_config import DEFAULT_CONFIG, validate_config
 from .audio_strings import audio_key
 from .shared_audio import base_event, shared_rules, event_underlays
 from .card_details import card_metadata, catalog_summaries
@@ -63,6 +64,7 @@ class Service:
         self.cache = None
         self.settings_path = self.workspace / 'settings.json'
         self.settings = {'game_path': '', 'locale': 'zhcn', 'paired_audio': False, 'general_audio': False, 'infinite_scroll': False, 'page_size': 24, 'online_transcripts': True, 'transcript_sources': [dict(s) for s in DEFAULT_SOURCES],
+                         'speech_config': dict(DEFAULT_CONFIG), 'speech_api_key': '',
                          'speech_recognition': True, 'source_defaults_version': 0, 'index_guide_seen': False,
                          'mix_voice_export': False, 'view_state': {}, 'ui_scale': 1.0, 'font_scale': 1.0,
                          'export_path': str(self.workspace / 'exports')}
@@ -98,6 +100,8 @@ class Service:
             values['view_state'] = validate_views(values['view_state'])
         if 'speech_recognition' in values and type(values['speech_recognition']) is not bool:
             raise ValueError('语音识别选项必须为开关值')
+        if 'speech_config' in values:
+            values['speech_config'] = validate_config(values['speech_config'])
         if 'transcript_sources' in values:
             values['transcript_sources'] = validate_sources(values['transcript_sources'])
         if 'general_audio' in values and type(values['general_audio']) is not bool:
@@ -106,6 +110,11 @@ class Service:
             raise ValueError('请选择有效的导出目录')
         if 'page_size' in values and values['page_size'] not in (24, 48, 72, 96):
             raise ValueError('每页数量必须为 24、48、72 或 96')
+        if 'speech_api_key' in values:
+            key = values['speech_api_key']
+            if not isinstance(key, str) or len(key) > 4096 or any(c in key for c in '\r\n'):
+                raise ValueError('API 密钥格式无效')
+            values['speech_api_key'] = key.strip()
         self.settings.update({k: v for k, v in values.items() if k in self.settings})
         temporary = self.settings_path.with_suffix('.tmp')
         temporary.write_text(json.dumps(self.settings, ensure_ascii=False, indent=2), 'utf-8')

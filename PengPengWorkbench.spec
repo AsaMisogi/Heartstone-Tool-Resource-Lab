@@ -13,6 +13,12 @@ windows = Path(os.environ['SystemRoot'])
 os.environ['PATH'] = os.pathsep.join(map(str, (windows / 'System32', windows)))
 
 datas = [('pengpeng/web', 'pengpeng/web'), ('THIRD_PARTY_NOTICES.md', '.'), ('LICENSE', '.')]
+# 模型是发行必需资源，缺失时构建失败，不能生成首次运行失效的安装包。
+for name in ('vosk-model-small-cn-0.22', 'vosk-model-small-en-us-0.15'):
+    folder = Path('pengpeng/models') / name
+    if not (folder / 'am/final.mdl').is_file() or not (folder / 'conf/model.conf').is_file():
+        raise RuntimeError('请先运行 tools/prepare_models.py：缺失 ' + name)
+datas += [('pengpeng/models', 'pengpeng/models'), ('licenses/VOSK_MODELS_APACHE-2.0.txt', 'licenses')]
 binaries = []
 hiddenimports = []
 for package in ('UnityPy', 'fmod_toolkit', 'pyfmodex', 'vosk'):

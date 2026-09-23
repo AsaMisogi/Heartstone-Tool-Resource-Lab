@@ -2,3 +2,4 @@ UnityPy==1.25.2
 PySide6==6.10.2
 soundfile==0.13.1
 vosk==0.3.45
+requests==2.34.2

@@ -24,7 +24,7 @@ class SpeechProcess:
             self.process.start()
         self.request_id = data['id']
         self.activity = time.monotonic()
-        self.deadline = self.activity + 125  # 首次模型下载的总等待上限。
+        self.deadline = self.activity + 180  # 自定义大模型加载及在线请求的硬上限。
         self.inbox.put(data)
 
     def stop(self, reason='语音识别已取消'):

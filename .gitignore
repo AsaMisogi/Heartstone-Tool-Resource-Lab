@@ -41,3 +41,35 @@ htmlcov/
 tools/probe.py
 tools/probe_links.py
 tools/probe_details.py
+
+# 模型由构建工具准备，仅随 Release 分发
+pengpeng/models/
+.kilo/
+
+# 历史说明与一次性验证脚本仅保留本地
+docs/ARCHITECTURE.md
+docs/CATALOG_CARDS.md
+docs/CATALOG_SORTING.md
+docs/INTERACTION_FIXES.md
+docs/PERFORMANCE.md
+docs/PUBLISHING.md
+docs/READABILITY_AND_DETAILS.md
+docs/RELEASE_v0.3.0.md
+docs/TRANSCRIPT_SOURCES.md
+docs/VALIDATION.md
+docs/VOICE_UPDATES.md
+docs/WORKBENCH_0_2.md
+tools/audio_sample_check.py
+tools/benchmark_resources.py
+tools/catalog_gui_smoke.py
+tools/gui_catalog_cards.py
+tools/gui_fixes.py
+tools/gui_readability.py
+tools/gui_source_settings.py
+tools/gui_speech.py
+tools/gui_transcript_browser.py
+tools/gui_transcript_recovery.py
+tools/gui_transcripts.py
+tools/gui_voice_updates.py
+tools/gui_workbench.py
+tools/index_local.py
