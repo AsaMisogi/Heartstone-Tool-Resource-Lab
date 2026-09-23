@@ -177,4 +177,4 @@ uv pip install --python .venv/Scripts/python.exe --cache-dir .cache/uv pytest==9
 
 第三方代码、运行库和在线内容遵循各自许可，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。感谢 [Hermes](https://github.com/Fbigame/Hermes) 提供的资源解析思路，以及 UnityPy、Qt、HearthSim、Vosk 和相关社区。
 
-作者：**朝禊ASOGI / [AsaMisogi](https://github.com/AsaMisogi)**
+作者：**朝禊ASOGI / [AsaMisogi](https://space.bilibili.com/315312)**
