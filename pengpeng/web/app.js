@@ -1,4 +1,4 @@
-/* 砰砰解析台桌面界面。所有数据来自 WebChannel，不连接远程卡牌 API。
+/* 砰砰解析台桌面界面。所有数据来自本地业务桥，不连接远程卡牌 API。
  * request generation 防止慢请求覆盖新选择；缩略图仅两项在途，避免阻塞交互队列。
  */
 "use strict";
@@ -33,14 +33,16 @@ let host,
     limit: 24,
     favorites: false,
     category: "",
+    subgroup: "",
     filters: {},
     viewStates: {},
-    catalogDisplay: {mode: "grid", size: 220},
+    catalogDisplay: {mode: "grid", size: 180},
     cardHistory: [],
     // 两个图鉴独立记忆排序，避免浏览皮肤后改变卡牌顺序。
-    catalogOrder: {cards: {sort: "default", descending: false}, heroes: {sort: "default", descending: false}},
+    catalogOrder: {cards: {sort: "default", descending: false}, heroes: {sort: "default", descending: false}, battlegrounds: {sort: "default", descending: false}},
     voiceLocale: "zhcn",
     voiceKind: "voice",
+    voiceGroup: "all",
     voiceItems: [],
     generation: 0,
     detailGeneration: 0,
@@ -59,9 +61,9 @@ let currentAudio = null,
   fx = null;
 // 查询条件按页面分开保存在工作区设置中。每次变更立即入队，关闭窗口时无需依赖防抖计时器。
 function rememberView() {
-  if (!state.preferencesReady || !["cards", "heroes", "audio", "effects"].includes(state.view)) return;
+  if (!state.preferencesReady || !["cards", "heroes", "battlegrounds", "audio", "effects"].includes(state.view)) return;
   const snapshot = {query: $("#search").value.trim(), locale: state.locale,
-    category: state.category, favorites: state.favorites, filters: {...state.filters},
+    category: state.category, subgroup: state.subgroup, favorites: state.favorites, filters: {...state.filters},
     display: {...state.catalogDisplay},
     order: {...(state.catalogOrder[state.view] || {sort: "default", descending: false})}};
   if (JSON.stringify(state.viewStates[state.view]) === JSON.stringify(snapshot)) return;
@@ -71,10 +73,16 @@ function rememberView() {
 function restoreView() {
   const saved = state.viewStates[state.view] || {};
   state.catalogDisplay = {mode: saved.display?.mode === "list" ? "list" : "grid",
-    size: Math.min(300, Math.max(180, Number(saved.display?.size) || 220))};
+    size: Math.min(280, Math.max(140, Number(saved.display?.size) || 180))};
   state.query = saved.query || "";
   state.locale = saved.locale || state.status?.settings.locale || "zhcn";
   state.category = saved.category || "";
+  state.subgroup = saved.subgroup || "";
+  // 旧分类已拆成大类与场景，迁移筛选记忆，避免升级后卡在不存在的分类。
+  if (state.view === 'audio' && ['音乐 / 登场曲', '环境 / 棋盘', '界面 / 交互', '战斗 / 法术', '其他音效'].includes(state.category)) {
+    state.category = state.category === '音乐 / 登场曲' ? '' : '音效';
+    state.subgroup = '';
+  }
   state.filters = {...saved.filters};
   state.favorites = !!saved.favorites;
   if (state.catalogOrder[state.view] && saved.order) state.catalogOrder[state.view] = {...saved.order};
@@ -106,19 +114,56 @@ function voiceExportOptions() {
 }
 // 先转义，再仅恢复无属性的强调标签；客户端文字不能注入脚本、链接或任意样式。
 function cardRichText(value) {
-  return esc(String(value || "").replace(/\[x\]/g, "").replace(/\[b\]|\\n/g, "\n").replace(/\$(?=\d)/g, ""))
+  const rich = esc(String(value || "").replace(/\[x\]/g, "").replace(/\[b\]|\\n/g, "\n").replace(/\$(?=\d)/g, ""))
     .replace(/&lt;(\/?)(b|i)&gt;/gi, '<$1$2>').replace(/&lt;br\s*\/?&gt;/gi, '<br>');
+  // 只替换文本节点，不在 HTML 属性里做字符串匹配；词条解释来自客户端词表。
+  const template = document.createElement('template');
+  template.innerHTML = rich;
+  const keywords = (state.card?.keywords || []).filter(k => plain(k.name).length > 1)
+    .sort((a,b) => b.name.length-a.name.length);
+  const terms = [...(state.card?.text_links || []).map((r,index)=>({name:r.label, relation:index})), ...keywords]
+    .sort((a,b)=>b.name.length-a.name.length);
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const text = node.textContent, fragment = document.createDocumentFragment();
+    let cursor = 0;
+    while (cursor < text.length) {
+      let next = null, at = text.length;
+      for (const keyword of terms) {
+        const index = text.indexOf(plain(keyword.name), cursor);
+        if (index >= 0 && index < at) { next = keyword; at = index; }
+      }
+      fragment.append(text.slice(cursor, at));
+      if (!next) break;
+      const button = document.createElement('button');
+      button.className = 'keyword';
+      if (next.relation !== undefined) button.dataset.textRelation = next.relation;
+      else button.dataset.keyword = next.name;
+      button.textContent = plain(next.name); button.setAttribute('aria-label', `${next.relation !== undefined ? '查看关联卡牌' : '解释'}：${button.textContent}`);
+      fragment.append(button); cursor = at + button.textContent.length;
+    }
+    node.replaceWith(fragment);
+  }
+  return template.innerHTML;
+}
+
+function encyclopediaFacts(c) {
+  const versions = c.versions || [], links = c.voice_links || [];
+  const linked = [...new Map(links.map(r => [r.name, r])).values()];
+  return `${versions.length > 1 ? `<details class="edition-panel"><summary>同名版本 <span>${versions.length}</span></summary><div class="edition-list">${versions.map(v => `<button class="edition-item ${v.id === c.id ? 'active' : ''}" data-related-card="${esc(v.id)}"><img class="edition-thumb" data-edition-image="${esc(v.id)}" alt="${esc(v.name)}缩略图"><b>${esc(v.context)} · ${esc(v.summary.sets?.join(' / '))}</b><small>${esc(v.id)}</small><p>${esc(plain(v.text) || v.summary.type || '')}</p></button>`).join('')}</div></details>` : ''}
+    ${linked.length ? `<details class="related-cards voice-relations" open><summary>${c.hero ? '专属语音 · 触发卡牌' : '使用此牌时有专属语音的英雄'} · ${linked.length}</summary><div>${linked.map(r => `<button class="related-card" data-related-card="${esc(r.id)}"><img class="relation-thumb" data-relation-image="${esc(r.id)}" alt=""><b>${esc(r.name)}</b><small>查看${r.hero ? '英雄' : '卡牌'} ↗</small></button>`).join('')}</div></details>` : ''}`;
 }
 function cardFacts(c) {
   const m = c.metadata || {};
   if (!Object.keys(m).length) return '';
-  const facts = [["法力", m.cost], ["类别", m.type], ["稀有度", m.rarity],
-    ["职业", m.classes?.join(" / ")], ["种族", m.races?.join(" / ") || "无"],
+  const facts = [[m.battlegrounds ? "酒馆等级" : "法力", m.battlegrounds ? m.tier : m.cost], ["战棋版本", m.battlegrounds ? (m.bg_golden ? "金色随从" : "普通随从") : null], ["随从池", m.battlegrounds ? (m.bg_pool ? "客户端标记可入池" : "衍生 / 非入池") : null], ["类别", m.type], ["稀有度", m.battlegrounds ? null : m.rarity],
+    ["职业", m.battlegrounds ? null : m.classes?.join(" / ")], ["种族", m.races?.join(" / ") || "无"],
     ["攻击 / 生命", m.attack != null && m.health != null ? `${m.attack} / ${m.health}` : undefined],
     ["攻击", m.health == null ? m.attack : undefined], ["生命", m.attack == null ? m.health : undefined], ["耐久", m.durability],
-    ["系列", m.sets?.join(" / ")]];
+    ["系列", m.sets?.join(" / ")], ["发行批次", m.editions?.join(" / ")]];
   return `<section class="detail-facts"><h3>基础信息</h3><dl class="card-facts">${facts.filter(([,v]) => v !== null && v !== undefined && v !== '').map(([k,v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
-    <details class="related-cards" ${c.related?.length ? 'open' : ''}><summary>相关卡牌 · ${c.related?.length || 0}</summary>${c.related?.length ? `<div>${c.related.map(r => `<button class="related-card" data-related-card="${esc(r.id)}"><b>${esc(r.name)}</b><small>${esc(r.id)} ↗</small></button>`).join('')}</div>` : '<p class="note">客户端关系表未提供此卡的相关卡牌。</p>'}</details></section>`;
+    <details class="related-cards" ${c.related?.length ? 'open' : ''}><summary>相关卡牌 · ${c.related?.length || 0}</summary>${c.related?.length ? `<div>${c.related.map(r => `<button class="related-card" data-related-card="${esc(r.id)}"><img class="relation-thumb" data-relation-image="${esc(r.id)}" alt=""><b>${esc(r.name)}</b><small>${esc(r.variant || r.id)} ↗</small></button>`).join('')}</div>` : '<p class="note">客户端关系表未提供此卡的相关卡牌。</p>'}</details></section>`;
 }
 // 卡片只消费随列表返回的摘要；所有数据先转义，颜色只作辅助，文字仍可辨认。
 function catalogTile(c) {
@@ -127,17 +172,17 @@ function catalogTile(c) {
   const classes = (m.classes || []).map(v => v === '通用英雄 / 中立' ? (c.hero ? '通用 / 中立' : '中立') : v).join(' / ') || '职业未标注';
   const sets = m.sets?.join(' / ') || '系列未标注';
   // 0 是有效属性；法术不虚构攻击/生命，武器优先展示耐久。
-  const stats = c.hero ? '' : [['费用', m.cost, 'mana'], ['攻击', m.attack, 'attack'],
+  const stats = c.hero ? '' : [[m.battlegrounds ? '星级' : '费用', m.battlegrounds ? m.tier : m.cost, 'mana'], ['攻击', m.attack, 'attack'],
     [m.durability != null ? '耐久' : '生命', m.durability ?? m.health, 'health']]
     .filter(([, value]) => value != null)
     .map(([label, value, style]) => `<span class="tile-stat ${style}"><span>${label}</span><strong>${esc(value)}</strong></span>`).join('');
-  const kind = c.hero ? (m.battlegrounds ? '酒馆战棋 · 英雄 / 皮肤' : '英雄 / 皮肤') : (m.type || '类型未标注');
+  const kind = c.hero ? (m.battlegrounds ? '酒馆战棋 · 英雄 / 皮肤' : '英雄 / 皮肤') : m.battlegrounds ? `战棋 · ${m.bg_golden ? '金色' : '普通'}随从` : (m.type || '类型未标注');
   const races = m.races?.join(' / ');
   return `<button class="card-tile rarity-${rarity}" data-card="${esc(c.id)}" title="${esc(c.name)} · ${esc(c.id)}">
-    <div class="card-image"><span class="placeholder">◈</span></div>
+    <div class="card-image"><span class="placeholder">◈</span>${c.is_new ? `<span class="new-badge">NEW</span>` : ""}${c.version_count > 1 ? `<span class="version-badge">${c.version_count} 个版本</span>` : ""}</div>
     <div class="tile-info"><b class="tile-name">${esc(c.name)}</b>
-      <div class="tile-kind ${m.battlegrounds ? 'is-battlegrounds' : ''}">${esc(kind)}${!c.hero ? `<span class="tile-rarity">${esc(m.rarity || '未标注')}</span>` : ''}</div>
-      <div class="tile-traits"><span class="tile-class">${esc(classes)}</span>${!c.hero ? `<span class="tile-races">${esc(races || '无种族')}</span>` : ''}</div>
+      <div class="tile-kind ${m.battlegrounds ? 'is-battlegrounds' : ''}">${esc(kind)}${!c.hero && !m.battlegrounds ? `<span class="tile-rarity">${esc(m.rarity || '未标注')}</span>` : ''}</div>
+      <div class="tile-traits">${!m.battlegrounds ? `<span class="tile-class">${esc(classes)}</span>` : ''}${!c.hero ? `<span class="tile-races">${esc(races || '无种族')}</span>` : ''}</div>
       ${stats ? `<div class="tile-stats">${stats}</div>` : ''}
       <div class="tile-set" title="${esc(sets)}">${esc(sets)}</div>
       <small class="tile-id">${esc(c.id)}</small>
@@ -150,8 +195,11 @@ audio.volume = 0.75;
 function api(method, params = {}) {
   return new Promise((resolve, reject) => {
     const id = ++serial;
-    pending.set(id, { resolve, reject });
-    host.request(JSON.stringify({ id, method, params }));
+    pending.set(id, { resolve, reject, method, started: performance.now() });
+    const scope = ['card','portrait','card_render','card_audio','invalidate_detail'].includes(method) ? 'detail' :
+      ['list_cards','list_assets'].includes(method) ? 'catalog' : '';
+    host.request(JSON.stringify({ id, method, params, scope }));
+    updateActivity();
   });
 }
 function toast(message) {
@@ -161,17 +209,21 @@ function toast(message) {
   toast.timer = setTimeout(() => ($("#toast").hidden = true), 7000);
 }
 function guarded(fn) {
-  return (...args) =>
-    Promise.resolve()
+  return (...args) => {
+    // 在事件分发结束前保留按钮引用；只标记当前操作，避免慢任务被连点重复入队。
+    const target = args[0]?.currentTarget;
+    // 导航永远可重入：点击新标签立即更新选择，旧请求只允许填充自己的代次。
+    const navigation = target?.matches?.('[data-tab],[data-variant],[data-render-variant],.nav,[data-play],[data-replay]');
+    const button = !navigation && target instanceof HTMLButtonElement ? target : null;
+    if (button?.getAttribute("aria-busy") === "true") return Promise.resolve();
+    button?.setAttribute("aria-busy", "true");
+    return Promise.resolve()
       .then(() => fn(...args))
       .catch((e) => {
         toast(e.message);
-        // 失败后移除失效的等待状态，避免界面一直显示“正在解析”。
-        document.querySelectorAll(".empty .spinner").forEach((spinner) => {
-          spinner.parentElement.textContent =
-            "读取失败：" + e.message + "。详情请查看实时日志。";
-        });
-      });
+        // 错误的内容区域由请求所有者处理，不能把新页面的加载状态改成旧错误。
+      }).finally(() => button?.removeAttribute("aria-busy"));
+  };
 }
 window.addEventListener("unhandledrejection", (e) => {
   toast(e.reason?.message || String(e.reason));
@@ -184,15 +236,24 @@ function receive(encoded) {
     const p = pending.get(data.id);
     if (p) {
       pending.delete(data.id);
+      updateActivity();
       data.error ? p.reject(new Error(data.error)) : p.resolve(data.result);
     }
     return;
   }
-  if (data.event === "speech_progress") {
+  if (data.event === 'export_progress') {
+    const task = [...pending.values()].find(p => p.method === 'export');
+    if (task) { task.stage = `${data.message} · ${data.done} / ${data.total}`; updateActivity(); }
+  } else if (data.event === 'transcript_progress') {
+    if (pending.has(data.request_id) && state.transcriptPending === state.detailGeneration) {
+      const note = $('#speech-inline-status');
+      if (note) note.textContent = `${data.message} · ${data.done} / ${data.total} · 音频可直接播放`;
+    }
+  } else if (data.event === "speech_progress") {
     if ($("#speech-status-result") && pending.has(data.request_id)) $("#speech-status-result").textContent = data.message;
     if (state.speechRun?.generation === state.detailGeneration && pending.has(data.request_id)) {
-      state.speechNote = data.message;
-      renderVoiceList();
+      state.speechNote = `${state.speechCount || ""} · ${data.message}`;
+      if ($("#speech-inline-status")) $("#speech-inline-status").textContent = state.speechNote;
     }
   } else if (data.event === "log") {
     state.logs.push(data.message);
@@ -201,9 +262,14 @@ function receive(encoded) {
   } else if (data.event === "progress") {
     $("#jobbar").hidden = false;
     $("#job-message").textContent = data.message;
-    $("#job-count").textContent = `${data.done} / ${data.total}`;
-    $("#job-progress").max = data.total;
-    $("#job-progress").value = data.done;
+    $("#job-count").textContent = data.total > 0 ? `${fmt(data.done)} / ${fmt(data.total)}` : '正在处理…';
+    $("#job-progress").max = data.total || 1;
+    if (data.total > 0) $("#job-progress").value = data.done;
+    else $("#job-progress").removeAttribute('value');
+    if ($("#welcome").open) {
+      $("#welcome-progress").hidden = false;
+      $("#welcome-progress").textContent = `${data.message} · ${$("#job-count").textContent}`;
+    }
   } else if (data.event === "scan_finished") {
     state.scanning = false;
     $("#jobbar").hidden = true;
@@ -213,7 +279,8 @@ function receive(encoded) {
       data.error ||
         (data.cancelled
           ? "索引已暂停，下次扫描将复用已完成部分。"
-          : "索引完成。可以搜索、试听和导出了。"),
+          : data.scope === "all" ? "完整资源索引已完成，可以检索、试听和导出全部已索引资源。"
+          : "当前页面索引已完成，可以试听和导出本页资源；本次仅建立页面所需索引。"),
     );
     if (["audio", "effects"].includes(state.view)) refresh();
   } else if (data.event === "detail_progress") {
@@ -238,6 +305,7 @@ function updateStatus(s) {
   state.generalAudio = !!s.settings.general_audio;
   state.mixVoiceExport = !!s.settings.mix_voice_export;
   state.infiniteScroll = !!s.settings.infinite_scroll;
+  WheelScroll.setMode(s.settings.scroll_mode);
   state.limit = Number(s.settings.page_size) || 24;
   $("#connection").textContent = "本地资源已连接";
   $("#connection-dot").style.background = "var(--green)";
@@ -265,10 +333,21 @@ function updateStatus(s) {
   SelectUI.refresh();
   languageWarning();
 }
-async function initialize(path) {
+async function initialize(path, accepted = false) {
+  if (!accepted) {
+    const report = await api('game_status', path ? {game_path:path} : {});
+    if (report.changed) { showGameUpdate(report, path); return false; }
+  }
+  state.initializing = true;
+  closeDetail(); stopPlayback();
+  thumbnailCache.clear();
   $("#connection").textContent = "正在读取资源…";
+  $("#jobbar").hidden = false;
+  $("#cancel-scan").hidden = true;
+  $("#job-message").textContent = '正在验证安装目录';
+  $("#job-progress").removeAttribute('value');
   $("#results").innerHTML =
-    '<div class="empty"><span class="spinner"></span><strong>正在打开本地档案馆</strong>首次连接将读取卡牌文本，通常需要几秒钟。</div>';
+    '<div class="empty"><span class="spinner"></span><strong>正在打开本地档案馆</strong>首次连接或升级会建立卡牌、版本和语音关系索引。</div>';
   try {
     const s = await api("initialize", path ? { game_path: path } : {});
     state.locale = s.settings.locale || "zhcn";
@@ -280,19 +359,64 @@ async function initialize(path) {
     $("#jobbar").hidden = true;
     renderFilters();
     await refresh();
+    $("#cancel-scan").hidden = false;
+    if ($("#welcome").open) $("#welcome").close();
     // 首次连接后才提示；用户选择会持久保存，重启不反复打扰。
-    if (!s.settings.index_guide_seen && s.indexed < s.bundles) $("#index-guide").showModal();
+    if (s.update_index_pending || (!s.settings.index_guide_seen && s.indexed < s.bundles)) {
+      $('#index-guide-title').textContent = s.update_index_pending ? '游戏已更新，建议重建完整资源索引' : '让资源查找更顺畅';
+      $('#index-guide').showModal();
+    }
     return true;
   } catch (e) {
     $("#jobbar").hidden = true;
+    $("#cancel-scan").hidden = false;
     toast(e.message);
     state.view = "settings";
     renderView();
     return false;
+  } finally {
+    state.initializing = false;
   }
 }
 
+function showGameUpdate(report, path) {
+  if ($('#game-update-dialog').open) return;
+  $('#game-update-message').textContent = `检测到客户端资源变化${report.game_version ? ' · ' + report.game_version : ''}。重新分析后将切换到新快照，并对照上次分析标记新增卡牌。`;
+  $('#game-analyze').onclick = guarded(async()=>{ $('#game-update-dialog').close(); await initialize(path, true); });
+  $('#game-update-dialog').showModal();
+  state.gameUpdateNotified = report.fingerprint;
+}
+async function checkGameUpdate() {
+  if (!state.status?.ready || state.initializing || state.checkingGame) return;
+  state.checkingGame = true;
+  try {
+    const report = await api('game_status');
+    if (report.changed && report.fingerprint !== state.gameUpdateNotified) showGameUpdate(report);
+  } catch (e) { console.warn('客户端版本检查：', e.message); }
+  finally { state.checkingGame = false; }
+}
+window.addEventListener('focus', checkGameUpdate);
+setInterval(checkGameUpdate, 60000);
+$('#game-update-later').onclick = () => $('#game-update-dialog').close();
+$('#relation-close').onclick = () => $('#relation-dialog').close();
+// 仅完整点击空白处才关闭，避免从卡牌拖动到外侧释放时误关。
+let relationBlankDown = false;
+$('#relation-dialog').addEventListener('pointerdown', e => {
+  relationBlankDown = !e.target.closest('button, h2, img');
+});
+$('#relation-dialog').addEventListener('click', e => {
+  if (relationBlankDown && !e.target.closest('button, h2, img')) $('#relation-dialog').close();
+  relationBlankDown = false;
+});
+$('#relation-dialog').addEventListener('close', () => {
+  state.relationObservers = (state.relationObservers || []).filter(item => {
+    if (item.root !== $('#relation-dialog')) return true;
+    item.observer.disconnect(); return false;
+  });
+});
+
 const views = {
+  battlegrounds: ["战棋图鉴", "BATTLEGROUNDS", "走进酒馆，认识每一位伙伴。", "按酒馆等级、种族和词条浏览本地战棋随从，查看普通与金色版本。"],
   cards: [
     "卡牌图鉴",
     "THE CARD ARCHIVE",
@@ -348,9 +472,11 @@ function renderView() {
   $("#stats").hidden = ["settings", "exports"].includes(state.view);
   $("#scan-button").hidden = ["settings", "exports"].includes(state.view);
   $("#category").hidden = state.view !== "audio";
+  $("#audio-subgroup").hidden = state.view !== "audio";
+  $("#audio-library-note").hidden = state.view !== "audio";
   $("#export-selected").hidden = state.view !== "audio";
   $("#favorites").hidden = state.view === "effects";
-  $("#search").placeholder = ["cards", "heroes"].includes(state.view)
+  $("#search").placeholder = ["cards", "heroes", "battlegrounds"].includes(state.view)
     ? (state.view === "heroes" ? "搜索英雄、皮肤名称、文本或 ID…" : "搜索卡牌名称、文本或 ID…")
     : "搜索资源名称、资源包或 GUID…";
   $("#view-hint").textContent =
@@ -359,6 +485,7 @@ function renderView() {
       : state.view === "effects"
         ? "资源预制体 · 实验性预览"
         : "原始纹理 · 中文优先";
+  $("#only-new").checked = state.filters.new === "1";
   renderFilters();
   renderOrder();
   renderCatalogDisplay();
@@ -377,6 +504,7 @@ async function changeView(view) {
   state.generation++;
   closeDetail();
   renderView();
+  window.scrollTo({top:0, behavior:'instant'});
   if (!["settings", "exports"].includes(view)) await refresh();
 }
 
@@ -384,7 +512,7 @@ async function refresh(append = false, preservePosition = false) {
   if (!state.status?.ready) return;
   rememberView();
   const generation = append ? state.generation : ++state.generation;
-  const cards = ["cards", "heroes"].includes(state.view);
+  const cards = ["cards", "heroes", "battlegrounds"].includes(state.view);
   if (!cards && !["audio", "effects"].includes(state.view)) return;
   // 保留旧列表及其高度，异步查询不会把浏览器滚动位置夹回页顶。
   const results = $("#results");
@@ -428,23 +556,54 @@ async function refresh(append = false, preservePosition = false) {
     document
       .querySelectorAll("[data-card]")
       .forEach((b) => (b.onclick = guarded(() => showCard(b.dataset.card))));
-    // 全列表共用两条缩略图队列，追加页面不取消前一批，也不增加并发数。
-    if (!append) thumbnailQueue = [];
-    thumbnailQueue.push(...data.items.map(card => ({card, generation})));
-    drainThumbnails();
+    // 只为可见区域及下一屏附近的卡牌解码缩略图，避免 96 条/无限列表
+    // 在滚动时为屏外图片持续解码、上传纹理。追加页面共用同一观察器。
+    if (!append || !thumbnailObserver) {
+      thumbnailQueue = [];
+      thumbnailGeneration++;
+      thumbnailObserver?.disconnect();
+      const observer = new IntersectionObserver(entries => {
+        if (thumbnailObserver !== observer) return;
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          observer.unobserve(entry.target);
+          thumbnailQueue.push({card:thumbnailCards.get(entry.target), generation:thumbnailGeneration});
+        }
+        drainThumbnails();
+      }, {rootMargin:'300px'});
+      thumbnailObserver = observer;
+    }
+    const cardsById = new Map(data.items.map(card=>[card.id,card]));
+    document.querySelectorAll('[data-card]').forEach(node=>{
+      const card = cardsById.get(node.dataset.card);
+      if (card) { thumbnailCards.set(node,card); thumbnailObserver.observe(node); }
+    });
   } else {
     if (state.view === "audio") {
+      thumbnailObserver?.disconnect(); thumbnailObserver = null;
+      thumbnailQueue = []; thumbnailGeneration++;
       $("#category").innerHTML =
         '<option value="">所有分类</option>' +
         data.categories
           .map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)
           .join("");
       $("#category").value = state.category;
+      const subgroups = [...(data.subgroups || [])];
+      if (state.subgroup && !subgroups.some(g => g.subgroup === state.subgroup))
+        subgroups.push({subgroup:state.subgroup, count:0});
+      $('#audio-subgroup').innerHTML = '<option value="">所有场景</option>' + subgroups
+        .map(g=>`<option value="${esc(g.subgroup)}">${esc(g.subgroup)} · ${g.count}</option>`).join('');
+      $('#audio-subgroup').value = state.subgroup;
+      $('#audio-library-note').textContent = (data.index_complete ? '完整资源索引' : data.music_indexed ? '音乐与环境索引就绪 · 其他声音可建立完整索引' : state.musicScanRequested && !state.scanning ? '音乐索引尚未完成 · 可点击建立完整索引继续' : '当前仅为部分资源 · 正在补齐音乐与环境索引') + '。中文注释来自命名规则，原始名称保留以供核对。';
+      if (!data.music_indexed && !state.scanning && state.musicScanRequested !== state.status.version) {
+        state.musicScanRequested = state.status.version;
+        startScan('music').catch(e=>{ state.musicScanRequested = false; toast(e.message); });
+      }
     }
     $("#results").insertAdjacentHTML("beforeend", data.items
       .map(
         (a) =>
-          `<div class="list-row">${state.view === "audio" ? `<input type="checkbox" data-select="${esc(a.id)}" aria-label="选择 ${esc(a.name)}" ${state.selected.has(a.id) ? "checked" : ""}>` : "<span></span>"}<button class="sound-icon" data-asset="${esc(a.id)}" aria-label="${state.view === "audio" ? "试听" : "预览"}">${state.view === "audio" ? "▷" : "✧"}</button><div><b>${esc(a.name)}</b><small>${esc(a.bundle)}</small></div><span class="type">${esc(a.category)}<small>${esc(a.locale)}</small></span><span class="type">${a.duration ? time(a.duration) : "—"}</span><button class="icon-button" data-fav="${esc(a.id)}" aria-label="收藏">${a.favorite ? "★" : "☆"}</button></div>`,
+          `<div class="list-row">${state.view === "audio" ? `<input type="checkbox" data-select="${esc(a.id)}" aria-label="选择 ${esc(a.name)}" ${state.selected.has(a.id) ? "checked" : ""}>` : "<span></span>"}<button class="sound-icon" data-asset="${esc(a.id)}" aria-label="${state.view === "audio" ? "试听" : "预览"}">${state.view === "audio" ? "▷" : "✧"}</button><div><b>${esc(a.name)} ${a.is_new ? `<span class="new-badge inline">NEW</span>` : ""}</b>${a.annotation ? `<p class="audio-annotation" title="资源命名规则注释">${esc(a.annotation)}</p>` : ""}<small>${esc(a.bundle)}</small></div><span class="type">${esc(a.category)}<small>${esc(a.locale)}</small></span><span class="type">${a.duration ? time(a.duration) : "—"}</span><button class="icon-button" data-fav="${esc(a.id)}" aria-label="收藏">${a.favorite ? "★" : "☆"}</button></div>`,
       )
       .join(""));
     document
@@ -486,6 +645,8 @@ async function refresh(append = false, preservePosition = false) {
 // 只缓存已成功解析的 URL，排序和翻页复用图片，失败项保留重试机会。
 // 有界缓存避免连续浏览数万张卡牌后无限增长；快照和语言都参与键值。
 let thumbnailQueue = [], thumbnailWorkers = 0;
+let thumbnailObserver = null, thumbnailGeneration = 0;
+const thumbnailCards = new WeakMap();
 const thumbnailCache = new Map();
 function drainThumbnails() {
   while (thumbnailWorkers < 2 && thumbnailQueue.length) {
@@ -494,7 +655,7 @@ function drainThumbnails() {
       try {
         while (thumbnailQueue.length) {
           const {card: c, generation} = thumbnailQueue.shift();
-          if (generation !== state.generation) continue;
+          if (generation !== thumbnailGeneration) continue;
           try {
             const locale = state.locale;
             const key = `${state.status.version}:${locale}:${c.id}`;
@@ -505,9 +666,18 @@ function drainThumbnails() {
               thumbnailCache.set(key, image);
               if (thumbnailCache.size > 256) thumbnailCache.delete(thumbnailCache.keys().next().value);
             }
-            if (generation !== state.generation) continue;
+            if (generation !== thumbnailGeneration) continue;
             const node = [...document.querySelectorAll("[data-card]")].find(n => n.dataset.card === c.id)?.querySelector(".card-image");
-            if (node && image.url) node.innerHTML = `<img src="${esc(image.url)}" alt="${esc(c.name)}" loading="lazy">`;
+            if (node && image.url) {
+              // 解码完成后一次替换，保留固定容器和版本角标；不会先移除占位，
+              // 再让大图解码/上传造成滚动中的空白帧。并发仍受两个 worker 限制。
+              const decoded = new Image();
+              decoded.alt = c.name; decoded.src = image.url;
+              await decoded.decode();
+              if (generation !== thumbnailGeneration || !node.isConnected) continue;
+              const old = node.querySelector('img,.placeholder');
+              if (old) old.replaceWith(decoded); else node.prepend(decoded);
+            }
           } catch (_) { /* 缺图保留占位，打开详情时显示具体原因。 */ }
         }
       } finally { thumbnailWorkers--; }
@@ -522,6 +692,7 @@ function fetchPage(cards) {
       ? {
           query: state.query,
           hero: state.view === "heroes",
+          battlegrounds: state.view === "battlegrounds",
           filters: state.filters,
           ...state.catalogOrder[state.view],
           offset: state.offset,
@@ -532,8 +703,10 @@ function fetchPage(cards) {
       : {
           query: state.query,
           kind: state.view === "audio" ? "AudioClip" : "GameObject",
+          new: state.filters.new === "1",
           locale: state.locale,
           category: state.category,
+          subgroup: state.subgroup,
           offset: state.offset,
           limit: state.limit,
           favorites: state.favorites,
@@ -542,6 +715,12 @@ function fetchPage(cards) {
 }
 
 function closeDetail() {
+  // 已播放的声音可以继续听；尚未完成的旧详情试听不应在离开后突然响起。
+  if (state.preparingAudio) stopPlayback();
+  if (host) api('invalidate_detail').catch(() => {});
+  state.relationObservers?.forEach(x=>x.observer.disconnect()); state.relationObservers = [];
+  // 详情关闭后停止动态卡面解码，避免隐藏视频继续占用 GPU。
+  document.querySelectorAll('#detail video').forEach(video => video.pause());
   state.cardHistory = [];
   cancelSpeech();
   api("cancel_effect").catch(() => {});
@@ -559,41 +738,70 @@ function closeDetail() {
   }
 }
 async function showCard(cardid, navigation = "new") {
-  if (navigation === "related" && state.card) state.cardHistory.push({id: state.card.id, tab: state.tab, variant: state.variant, scroll: $("#detail").scrollTop, voiceLocale: state.voiceLocale, voiceKind: state.voiceKind});
+  if (state.preparingAudio) stopPlayback();
+  if (navigation === "related" && state.card) state.cardHistory.push({id: state.card.id, tab: state.tab, variant: state.variant, renderVariant: state.renderVariant || 0, scroll: $("#detail").scrollTop, voiceLocale: state.voiceLocale, voiceKind: state.voiceKind, voiceGroup: state.voiceGroup});
   if (navigation === "new") state.cardHistory = [];
   cancelSpeech();
   const generation = ++state.detailGeneration;
   state.variant = 0;
+  state.renderVariant = 0;
   state.voiceLocale = "zhcn";
   state.voiceKind = "voice";
+  state.voiceGroup = "all";
   state.voiceItems = [];
+  state.card = null;
   state.tab = "art";
   openDetail();
   $("#detail-kicker").textContent = "CARD INSPECTOR";
   $("#detail-content").innerHTML =
     '<div class="empty"><span class="spinner"></span> 正在解析卡牌…</div>';
-  const card = await api("card", { cardid, locale: state.locale });
+  let card;
+  try { card = await api("card", { cardid, locale: state.locale }); }
+  catch (e) {
+    if (generation === state.detailGeneration) $("#detail-content").innerHTML = `<p class="warning">${esc(e.message)}</p>`;
+    return;
+  }
   if (generation !== state.detailGeneration) return;
   state.card = card;
   renderCard();
   await cardTab("art");
-  $("#detail").scrollTop = 0;
+  if (state.card === card && state.tab === 'art') $("#detail").scrollTop = 0;
 }
 function renderCard() {
+  state.relationObservers?.forEach(x=>x.observer.disconnect()); state.relationObservers = [];
   const c = state.card;
+  $("#detail-kicker").textContent = c.metadata?.battlegrounds ? "BATTLEGROUNDS INSPECTOR" : "CARD INSPECTOR";
   $("#detail-content").innerHTML =
-    `<div class="card-id">${esc(c.id)} · ${c.hero ? "英雄 / 皮肤" : "卡牌"}</div><h2>${esc(c.name)}</h2><div class="detail-actions"><button id="favorite-card" class="subtle">${c.favorite ? "★ 已收藏" : "☆ 收藏卡牌"}</button><button id="export-card" class="subtle">↓ 导出图像、文本与全部语音</button></div><div class="detail-tabs"><button data-tab="art" class="active">原画</button><button data-tab="render">完整卡面</button><button data-tab="voices">语音</button><button data-tab="effects">特效</button><button data-tab="raw">源数据</button></div><div id="detail-body"></div>`;
+    `<div class="card-id">${esc(c.id)} · ${c.hero ? "英雄 / 皮肤" : "卡牌"}</div><h2>${esc(c.name)}</h2>${c.metadata?.battlegrounds ? `<p class="bg-summary">★ ${esc(c.metadata.tier || "—")} 星 · ${c.metadata.bg_golden ? "金色" : "普通"}随从 · ${esc(c.metadata.races?.join(" / ") || "无种族")} · ${esc(c.metadata.attack)} / ${esc(c.metadata.health)}</p>` : ""}<div class="detail-actions"><button id="favorite-card" class="subtle">${c.favorite ? "★ 已收藏" : "☆ 收藏卡牌"}</button><button id="export-card" class="subtle">↓ 导出图像、文本与全部语音</button></div><div class="detail-tabs"><button data-tab="art" class="active">原画</button><button data-tab="render">完整卡面</button><button data-tab="voices">语音</button><button data-tab="effects">特效</button><button data-tab="raw">源数据</button></div><div id="detail-body"></div>`;
   $("#detail-content").insertAdjacentHTML("afterbegin", state.cardHistory.length ? '<button id="back-card" class="subtle">← 返回上一张卡牌</button>' : '');
   if ($("#back-card")) $("#back-card").onclick = guarded(async () => {
     const previous = state.cardHistory.pop();
     await showCard(previous.id, "back");
+    if (state.card?.id !== previous.id) return;
+    const restoredCard = state.card;
     state.variant = previous.variant;
-    state.voiceLocale = previous.voiceLocale; state.voiceKind = previous.voiceKind;
+    state.renderVariant = previous.renderVariant;
+    state.voiceLocale = previous.voiceLocale; state.voiceKind = previous.voiceKind; state.voiceGroup = previous.voiceGroup || "all";
     if (previous.tab !== "art" || previous.variant) await cardTab(previous.tab);
-    $("#detail").scrollTop = previous.scroll;
+    if (state.card === restoredCard) $("#detail").scrollTop = previous.scroll;
   });
   // 基础信息独立放在动态标签内容之后，切换标签不会移动或重复创建。
-  $("#detail-content").insertAdjacentHTML("beforeend", cardFacts(c));
+  $("#detail-content").insertAdjacentHTML("beforeend", encyclopediaFacts(c) + cardFacts(c));
+  // 关系列表按可见区域读取缩略图；同一时刻仅一项，关闭详情即停止后续工作。
+  loadRelationImages($('#detail-content'));
+  const editions = document.querySelector('.edition-panel');
+  if (editions) editions.addEventListener('toggle', async () => {
+    if (!editions.open || editions.dataset.loading) return;
+    editions.dataset.loading = 'true';
+    // 展开才顺序读取缩略图，避免一次排入几十个请求挡住试听。
+    for (const image of editions.querySelectorAll('[data-edition-image]')) {
+      if (!editions.isConnected) break;
+      try {
+        const result = await api('thumbnail', {cardid:image.dataset.editionImage, locale:state.locale});
+        image.src = result.url;
+      } catch { image.alt = '原画未安装'; }
+    }
+  });
   document.querySelectorAll('[data-related-card]').forEach(b => b.onclick = guarded(() => showCard(b.dataset.relatedCard, "related")));
   document
     .querySelectorAll("[data-tab]")
@@ -611,12 +819,43 @@ function renderCard() {
     exportFiles({ cardid: c.id, locale: state.voiceLocale, ...voiceExportOptions() }),
   );
 }
+function loadRelationImages(root) {
+  const queue = []; let busy = false;
+  const observer = new IntersectionObserver(entries => {
+    for (const entry of entries) if (entry.isIntersecting) {
+      observer.unobserve(entry.target); queue.push(entry.target);
+    }
+    drain();
+  }, {root:root.tagName === 'DIALOG' ? root : $('#detail'), rootMargin:'100px'});
+  async function drain() {
+    if (busy) return;
+    busy = true;
+    while (queue.length && root.isConnected && (root.tagName !== 'DIALOG' || root.open)) {
+      const image = queue.shift();
+      if (!image.isConnected) continue;
+      try { const result = await api('thumbnail', {cardid:image.dataset.relationImage,locale:state.locale}); image.src=result.url; }
+      catch { image.alt='暂无原画'; }
+    }
+    busy = false;
+  }
+  root.querySelectorAll('[data-relation-image]').forEach(image=>observer.observe(image));
+  // 详情重建后释放观察器，避免保存历史页面和失效缩略图节点。
+  state.relationObservers ||= [];
+  state.relationObservers = state.relationObservers.filter(item=>{
+    if (!item.root.isConnected || (item.root.tagName === 'DIALOG' && !item.root.open)) {item.observer.disconnect();return false;}return true;
+  });
+  state.relationObservers.push({root,observer});
+}
 async function cardTab(tab) {
   if (!state.card) return;
   cancelSpeech();
   state.tab = tab;
   const c = state.card;
   const generation = ++state.detailGeneration;
+  SelectUI.close();
+  api('invalidate_detail').catch(() => {});
+  document.querySelectorAll('#detail video').forEach(v => v.pause());
+  api('cancel_effect').catch(() => {});
   document
     .querySelectorAll("[data-tab]")
     .forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
@@ -627,6 +866,7 @@ async function cardTab(tab) {
     fx.stop();
     fx = null;
   }
+  try {
   if (tab === "art") {
     body.innerHTML = `<div class="variant-tabs">${c.variants.map((v, i) => `<button data-variant="${i}" ${v.available ? "" : "disabled"} class="${state.variant === i ? "active" : ""}">${esc(v.label)}</button>`).join("")}</div><div class="card-text">${cardRichText(c.text || c.description || "本地数据库未提供描述文本。")}</div>${c.flavor ? `<div class="flavor">${esc(plain(c.flavor))}</div>` : ""}${c.artist ? `<div class="note card-artist">画师 · ${esc(c.artist)}</div>` : ""}<div id="portrait"><div class="empty"><span class="spinner"></span> 正在解码纹理…</div></div>`;
     document.querySelectorAll("[data-variant]").forEach(
@@ -663,13 +903,18 @@ async function cardTab(tab) {
     if (data.errors.length)
       $("#portrait").insertAdjacentHTML("beforeend", errorBox(data.errors));
   } else if (tab === "render") {
-    body.innerHTML = '<div class="note">完整卡面来自 HearthstoneJSON，首次查看需要联网；成功后可离线查看。图源是在线最新普通卡面，可能与本地补丁不同。</div><div id="render-stage" class="empty"><span class="spinner"></span> 正在读取完整卡面…</div>';
+    const quality = state.renderVariant || 0;
+    body.innerHTML = `<div class="variant-tabs">${['普通','金卡','异画','钻石'].map((label,i) => `<button data-render-variant="${i}" class="${i===quality?'active':''}">${label}</button>`).join('')}</div><p class="note">在线最新卡面 · 首次联网，缓存后可离线查看</p><div id="render-stage" class="empty"><span class="spinner"></span> 正在读取完整卡面…</div>`;
+    body.querySelectorAll('[data-render-variant]').forEach(b => b.onclick = guarded(() => {
+      state.renderVariant = Number(b.dataset.renderVariant); return cardTab('render');
+    }));
     try {
-      const image = await api("card_render", {cardid: c.id, locale: state.locale});
+      const image = await api("card_render", {cardid: c.id, locale: state.locale, variant: quality});
       if (generation !== state.detailGeneration) return;
       $("#render-stage").className = "render-stage";
-      $("#render-stage").innerHTML = `<img id="full-card" src="${esc(image.url)}" alt="${esc(c.name)}完整卡面"><p class="note">${image.width} × ${image.height} px · ${esc(image.source)} · 点击放大</p><button id="export-render" class="subtle">↓ 导出完整卡面 PNG</button>`;
-      $("#full-card").onclick = () => viewImage(image, c.name + " · 完整卡面");
+      const video = image.media === 'video';
+      $("#render-stage").innerHTML = `${video ? `<video id="full-card" src="${esc(image.url)}" ${matchMedia("(prefers-reduced-motion: reduce)").matches ? "" : "autoplay"} muted loop controls playsinline aria-label="${esc(c.name)}动态卡面"></video>` : `<img id="full-card" src="${esc(image.url)}" alt="${esc(c.name)}完整卡面">`}<p class="note">${esc(image.source)}</p><button id="export-render" class="subtle">↓ 导出完整卡面 ${video?'WebM':'PNG'}</button>`;
+      if (!video) $("#full-card").onclick = () => viewImage(image, c.name + " · 完整卡面");
       $("#export-render").onclick = guarded(() => exportFiles({image_path: image.path, context_cardid: c.id, label: "完整卡面"}));
     } catch (e) {
       if (generation !== state.detailGeneration) return;
@@ -677,33 +922,48 @@ async function cardTab(tab) {
       $("#retry-render").onclick = guarded(() => cardTab("render"));
     }
   } else if (tab === "voices") {
+    state.voiceLoading = generation;
     state.voiceItems = [];
+    state.voicePage = 1;
+    state.voicePageSize = state.status.settings.voice_page_size || 24;
     state.voiceErrors = [];
     state.transcriptNote = "";
     state.transcriptPending = null;
     state.transcriptSources = [];
     // 语音语言独立于图鉴文本，首次打开卡牌默认简体中文。
-    body.innerHTML = `<div class="voice-toolbar"><label>资源语言<select id="voice-locale" aria-label="语音语言">${state.status.locales.map(l => `<option value="${l.code}" ${l.code === state.voiceLocale ? "selected" : ""}>${esc(l.name)}${l.audioInstalled ? "" : " · 未安装"}</option>`).join("")}</select></label><label class="pair-label"><input id="paired-audio" type="checkbox" ${state.pairedAudio ? "checked" : ""}>配套音效 / 音乐</label><label class="pair-label" title="随从登场时叠加落地、嘲讽和圣盾，以及卡牌实际引用的种族 / 材质垫音；下次播放生效"><input id="general-audio" type="checkbox" ${state.generalAudio ? "checked" : ""}>通用音效</label></div><div id="voice-warning" class="warning" hidden></div><div class="detail-tabs voice-tabs"><button data-voice-kind="voice">角色语音</button><button data-voice-kind="sound">音效与音乐</button></div><div id="voice-list" class="empty"><span class="spinner"></span>正在解析声音引用…</div>`;
+    body.innerHTML = `<div class="voice-toolbar"><label>资源语言<select id="voice-locale" aria-label="语音语言">${state.status.locales.map(l => `<option value="${l.code}" ${l.code === state.voiceLocale ? "selected" : ""}>${esc(l.name)}${l.audioInstalled ? "" : " · 未安装"}</option>`).join("")}</select></label><label class="pair-label"><input id="paired-audio" type="checkbox" ${state.pairedAudio ? "checked" : ""}>配套音效 / 音乐</label><label class="pair-label" title="已知时间按时播放；未知时间随语音叠加播放；下次播放生效"><input id="general-audio" type="checkbox" ${state.generalAudio ? "checked" : ""}>通用音效</label></div><div id="voice-warning" class="warning" hidden></div><div class="detail-tabs voice-tabs"><button data-voice-kind="voice">角色语音</button><button data-voice-kind="sound">音效与音乐</button></div><input id="voice-search" type="search" placeholder="筛选台词、事件或音频名…" aria-label="筛选语音"><div id="voice-list" class="empty"><span class="spinner"></span>正在解析声音引用…</div>`;
     SelectUI.refresh();
+    $("#voice-search").oninput = () => { state.voicePage = 1; renderVoiceList(); queueVisibleSpeech(); };
     $("#voice-locale").onchange = guarded(async () => {
       state.voiceLocale = $("#voice-locale").value;
       stopPlayback();
       await cardTab("voices");
     });
-    $(".voice-toolbar").insertAdjacentHTML("beforeend", `<label class="pair-label mix-export"><input id="mix-voice-export" type="checkbox" ${state.mixVoiceExport ? "checked" : ""}>导出时合并已勾选音效</label><p class="note">合并为一个 WAV，保留配音尾声（最长 15 秒）；未勾选时导出原始声音。</p><button id="export-voices" class="subtle" disabled>↓ 导出全部角色语音</button>`);
+    $(".voice-toolbar").insertAdjacentHTML("beforeend", `<button id="export-voices" class="subtle" disabled>↓ 导出全部语音</button><details id="voice-options" open><summary>试听与导出选项</summary><div><label class="pair-label" title="合并为一个 WAV，保留配音尾声（最长 15 秒）"><input id="mix-voice-export" type="checkbox" ${state.mixVoiceExport ? "checked" : ""}>导出时合并音效</label></div></details>`);
+    document.querySelectorAll('.voice-toolbar > .pair-label').forEach(label => $("#voice-options > div").prepend(label));
     $("#export-voices").onclick = guarded(() => exportFiles({assetids: [...new Set(state.voiceItems.filter(x => x.kind === "voice").map(x => x.id))], context_cardid: c.id, locale: state.voiceLocale, ...voiceExportOptions()}));
     for (const [selector, key, setting] of [["#mix-voice-export", "mixVoiceExport", "mix_voice_export"], ["#paired-audio", "pairedAudio", "paired_audio"], ["#general-audio", "generalAudio", "general_audio"]]) {
       $(selector).onchange = guarded(async () => {
         const checkbox = $(selector), enabled = checkbox.checked;
+        const previous = state[key];
+        // 勾选立即影响下一次试听，磁盘保存不应成为播放开关的生效延迟。
+        // 否则“勾选后马上播放”会仍然使用旧选项，表现为配套音效丢失。
+        state[key] = enabled;
         checkbox.disabled = true;
         // 使在途的配音准备失效，避免取消勾选后旧请求仍启动声音。
         ++playGeneration;
-        stopCompanions();
+        state.preparingAudio = null;
+        syncPlaybackButton();
         try {
           await api("save_settings", {[setting]: enabled});
-          state[key] = enabled;
           state.status.settings[setting] = enabled;
           renderVoiceList();
+        } catch (error) {
+          state[key] = previous;
+          ++playGeneration;
+          state.preparingAudio = null;
+          syncPlaybackButton();
+          throw error;
         } finally {
           // 保存失败时恢复真实状态，不能显示已记忆但实际未保存的勾选。
           checkbox.checked = !!state[key];
@@ -713,13 +973,16 @@ async function cardTab(tab) {
     }
     document.querySelectorAll("[data-voice-kind]").forEach(b => b.onclick = () => {
       state.voiceKind = b.dataset.voiceKind;
+      state.voicePage = 1;
       renderVoiceList();
+      queueVisibleSpeech();
     });
     const installed = state.status.locales.find(l => l.code === state.voiceLocale)?.audioInstalled;
     $("#voice-warning").hidden = !!installed;
     $("#voice-warning").textContent = "当前客户端未安装此语言的语音资源。可在战网客户端安装相应语言后重新连接；通用音效不代表该语言已安装。";
     const data = await api("card_audio", { cardid: c.id, locale: state.voiceLocale });
     if (generation !== state.detailGeneration) return;
+    state.voiceLoading = 0;
     state.voiceItems = data.items;
     $("#export-voices").disabled = !data.items.some(x => x.kind === "voice");
     state.voiceErrors = data.errors;
@@ -738,6 +1001,11 @@ async function cardTab(tab) {
       );
   } else
     body.innerHTML = `<p class="note">本地 CardDef 原始数据。字段与路径均来自当前资源包。</p><pre class="raw">${esc(JSON.stringify(c.definition, null, 2))}</pre>`;
+  } catch (e) {
+    if (generation !== state.detailGeneration || !body.isConnected) return;
+    body.innerHTML = `<p class="warning">${esc(e.message)}</p><button class="subtle" id="retry-tab">重试读取</button>`;
+    $('#retry-tab').onclick = () => cardTab(tab);
+  }
 }
 function eventName(name) {
   const map = {
@@ -773,12 +1041,14 @@ function voiceRows(items) {
     items
       .map(
         (a) =>
-          `<div class="voice-row"><div class="voice-top"><b>${esc(eventName(a.name + " " + (a.event || "")))}</b><div><button data-play="${esc(a.id)}" aria-label="试听">▷</button><button data-export="${esc(a.id)}" aria-label="导出 WAV">↓</button></div></div>${a.text ? `<p class="transcript">${esc(speechText(a.text))}</p>${a.source ? `<a class="transcript-source" href="${esc(a.source)}">${esc(a.source_name)} · ${a.match_method === "audio_key" ? "按音频键精确匹配" : "按唯一事件匹配"}${a.stale ? " · 离线缓存" : ""} ↗</a>` : '<small>客户端字幕</small>'}` : a.kind === "voice" ? `${a.speech_text ? `<p class="transcript">${esc(a.speech_text)}</p><small class="speech-label">语音识别 · 不保证准确性${a.speech_cached ? " · 缓存" : ""}</small>` : `<p class="transcript-missing">${esc(a.speech_error || (a.speech_done ? "未识别出文字，可能是笑声、喘息或背景音。" : "本地字幕表未找到此音频的准确台词。"))}</p>`}${state.status.settings.speech_recognition !== false && ["zhcn", "enus"].includes(state.voiceLocale) ? `<button class="subtle speech-retry" data-speech="${esc(a.id)}" ${state.speechRun || state.transcriptPending === state.detailGeneration ? "disabled" : ""}>${a.speech_done || a.speech_error ? "重试语音识别" : "语音识别"}</button>` : ""}` : ""}<small>${esc(a.name)}<br>${esc(a.event || "")} · ${esc(a.locale)}</small></div>`,
+          `<div class="voice-row" data-voice-row="${esc(a.id)}"><div class="voice-top"><b>${esc((a.trigger_card || a.adventure) ? a.event : eventName(a.name + " " + (a.event || "")))}</b><div><button data-play="${esc(a.id)}" aria-label="试听">▷</button><button data-replay="${esc(a.id)}" aria-label="从头重播">↻</button><button data-export="${esc(a.id)}" aria-label="导出 WAV">↓</button></div></div>${a.condition ? `<p class="voice-condition">${esc(a.condition)}</p>` : ""}${a.condition_targets?.length ? `<details class="voice-targets"><summary>查看适用对象 · ${a.condition_targets.length}</summary><div class="condition-targets">${a.condition_targets.map(t=>`<button class="subtle" data-trigger-card="${esc(t.id)}">${esc(t.name)} ↗</button>`).join("")}</div></details>` : ""}${a.text ? `<p class="transcript">${esc(speechText(a.text))}</p>${a.source ? `<a class="transcript-source" href="${esc(a.source)}">${esc(a.source_name)} · ${a.match_method === "audio_key" ? "按音频键精确匹配" : "按唯一事件匹配"}${a.stale ? " · 离线缓存" : ""} ↗</a>` : '<small>客户端字幕</small>'}` : a.kind === "voice" ? `${a.speech_text ? `<p class="transcript">${esc(a.speech_text)}</p><small class="speech-label">语音识别 · 不保证准确性${a.speech_cached ? " · 缓存" : ""}</small>` : `<p class="transcript-missing">${esc(a.speech_error || (a.speech_done ? "未识别出文字" : "暂无台词"))}</p>`}${state.status.settings.speech_recognition !== false && ["zhcn", "enus"].includes(state.voiceLocale) ? `<button class="subtle speech-retry" data-speech="${esc(a.id)}" ${state.speechRun || state.transcriptPending === state.detailGeneration ? "disabled" : ""}>${a.speech_done || a.speech_error ? "重试语音识别" : "语音识别"}</button>` : ""}` : ""}<details class="voice-technical"><summary>资源信息与触发时间</summary><p>${esc(a.timing?.label || "触发时间依赖游戏状态，尚未确定")}</p><small>${esc(a.name)}<br>${esc(a.event || "")} · ${esc(a.locale)}</small></details>${a.trigger_card ? `<button class="subtle" data-trigger-card="${esc(a.trigger_card)}">查看触发卡牌 ↗</button>` : ""}</div>`,
       )
       .join("") || '<div class="empty">此引用下未发现可读取的音频。</div>'
   );
 }
 function bindVoices(node) {
+  node.querySelectorAll("[data-replay]").forEach(b => b.onclick = guarded(() => playAsset(b.dataset.replay, true)));
+  node.querySelectorAll("[data-trigger-card]").forEach(b => b.onclick = guarded(() => showCard(b.dataset.triggerCard, "related")));
   node.querySelectorAll("[data-speech]").forEach(button => {
     button.onclick = guarded(() => recognizeMissing(state.detailGeneration, button.dataset.speech));
   });
@@ -800,62 +1070,62 @@ function errorBox(errors) {
     : "";
 }
 
-async function playAsset(assetid) {
+async function playAsset(assetid, replay = false) {
+  // 同一资源再次点击直接暂停/继续，避免重新解码和从头播放。
+  if (!replay && !state.preparingAudio && currentAudio?.assetid === assetid && !audio.ended) {
+    $("#play-pause").click();
+    return;
+  }
   if (fx) fx.stop();
   const generation = ++playGeneration;
-  stopCompanions();
+  state.preparingAudio = assetid;
+  $('#player').hidden = false;
+  $('#track-name').textContent = '正在准备试听…';
+  $('#track-info').textContent = '读取音频与配套声音';
+  syncPlaybackButton();
+  try {
   audio.pause();
-  toast("正在准备音频…");
+  // 解码进度由统一状态区显示，避免播放开始后残留七秒的“准备中”提示。
   const contextCardid = state.card?.id || "";
   const voiceLocale = contextCardid ? state.voiceLocale : state.locale;
   const selected = state.voiceItems.find(x => x.id === assetid && x.kind === "voice");
-  const voiceItems = state.voiceItems;
-  const data = await api("audio", { assetid, locale: voiceLocale });
+  // 配音只经后端生成一条时间轴 WAV。浏览器只有一个媒体时钟，暂停、
+  // 拖动和重播不再依赖多条 Audio 的 play 事件及不精确的 setTimeout。
+  const data = selected && (state.pairedAudio || state.generalAudio)
+    ? await api('playback_audio', {assetid, cardid:contextCardid, locale:voiceLocale,
+        paired_audio:state.pairedAudio, general_audio:state.generalAudio})
+    : await decodedAudio(assetid, voiceLocale);
   if (generation !== playGeneration) return;
-  const companions = [];
-  // 两类配音共用一个 ID 集合，避免 Underlay 同时被两个选项重复播放。
-  const ids = new Set();
-  if (state.pairedAudio && selected?.group) {
-    voiceItems.filter(x => x.group === selected.group && x.kind === "sound").forEach(x => ids.add(x.id));
-  }
-  if (state.generalAudio && selected && contextCardid) {
-    try {
-      const shared = await api("general_audio", {cardid: contextCardid, assetid, locale: voiceLocale});
-      if (generation !== playGeneration) return;
-      shared.items.forEach(x => ids.add(x.id));
-      if (shared.errors.length) toast("部分通用音效不可用：" + shared.errors.join("；"));
-    } catch (e) { if (generation !== playGeneration) return; toast("通用音效不可用：" + e.message); }
-  }
-  for (const id of ids) {
-    try {
-      const related = await api("audio", {assetid: id});
-      if (generation !== playGeneration) return;
-      companions.push(...related.samples);
-    } catch (e) { if (generation !== playGeneration) return; toast("配套声音不可用：" + e.message); }
-  }
-  if (generation !== playGeneration) return;
-  companionTracks = companions.map(sample => { const track = new Audio(sample.url); track.volume = audio.volume;
-    // 以媒体时间计算剩余额度；精确定时器负责截停，timeupdate 处理拖动兜底。
-    const cap = () => { track.capped = true; track.pause(); syncPlaybackButton(); };
-    const schedule = () => {
-      clearTimeout(track.capTimer);
-      if (track.currentTime >= 15) cap();
-      else if (!track.paused) track.capTimer = setTimeout(cap, (15 - track.currentTime) * 1000 / track.playbackRate);
-      syncPlaybackButton();
-    };
-    track.onplaying = schedule;
-    track.onseeked = schedule;
-    track.onpause = () => { clearTimeout(track.capTimer); syncPlaybackButton(); };
-    track.onended = () => { clearTimeout(track.capTimer); syncPlaybackButton(); };
-    track.ontimeupdate = () => { if (track.currentTime >= 15) cap(); };
-    return track; });
   currentAudio = { assetid, samples: data.samples, index: 0, context_cardid: contextCardid, locale: voiceLocale };
   playSample(data.samples[0]);
-  // 主音轨的 play 事件统一启动配套音轨，避免重复调用 play。
+  if (data.timeline?.errors?.length) toast('部分配套未能读取：' + data.timeline.errors.join('；'));
+  // 播放与导出使用相同的样本偏移，时间轴包含配套音轨尾声。
   if (data.samples.length > 1)
     toast(
       `此资源含 ${data.samples.length} 个子采样，将依次播放；导出会保留全部。`,
     );
+  } catch (e) {
+    if (generation === playGeneration) {
+      $('#track-name').textContent = '试听未成功';
+      $('#track-info').textContent = e.message + ' · 可再次点击重试';
+      toast(e.message);
+    }
+  } finally {
+    if (generation === playGeneration) { state.preparingAudio = null; syncPlaybackButton(); }
+  }
+}
+// 复用已解码的 WAV 元数据与在途请求；不缓存失败，重播无需再次排队读取。
+const decodedTracks = new Map();
+function decodedAudio(assetid, locale) {
+  const key = `${state.status.version}:${locale}:${assetid}`;
+  if (decodedTracks.has(key)) return decodedTracks.get(key);
+  const result = api('audio', {assetid, locale}).then(data => {
+    if (!data.samples?.length) throw Error('此音频没有可播放的采样');
+    return data;
+  }).catch(e=>{ decodedTracks.delete(key); throw e; });
+  decodedTracks.set(key, result);
+  while (decodedTracks.size > 32) decodedTracks.delete(decodedTracks.keys().next().value);
+  return result;
 }
 function playSample(sample) {
   $("#player").hidden = false;
@@ -864,36 +1134,17 @@ function playSample(sample) {
     `PCM WAV · ${sample.rate} Hz · ${sample.channels} 声道`;
   audio.src = sample.url;
   audio.play().catch(e => { if (e.name !== "AbortError") toast("无法播放：" + e.message); });
-  drawWave(sample.peaks, 0);
+  waveform.setPeaks(sample.peaks);
 }
-audio.onplay = () => ($("#play-pause").textContent = "Ⅱ");
-audio.onpause = () => ($("#play-pause").textContent = "▶");
-audio.ontimeupdate = () => {
-  $("#track-time").textContent =
-    `${time(audio.currentTime)} / ${time(audio.duration)}`;
-  if (currentAudio)
-    drawWave(
-      currentAudio.samples[currentAudio.index].peaks,
-      audio.currentTime / (audio.duration || 1),
-    );
-};
+audio.onplay = syncPlaybackButton;
+audio.onpause = syncPlaybackButton;
+const waveform = new WaveformControl($("#waveform"), audio, $("#track-time"), time);
 audio.onended = () => {
   if (currentAudio && currentAudio.index + 1 < currentAudio.samples.length)
     playSample(currentAudio.samples[++currentAudio.index]);
 };
 audio.onerror = () =>
   toast("播放器无法读取该文件，请查看日志。WAV 仍可导出供其他播放器打开。");
-function drawWave(peaks, progress) {
-  const c = $("#waveform"),
-    ctx = c.getContext("2d");
-  ctx.clearRect(0, 0, c.width, c.height);
-  const w = c.width / Math.max(1, peaks.length);
-  peaks.forEach((v, i) => {
-    ctx.fillStyle = i / peaks.length < progress ? "#e9ad78" : "#687181";
-    const h = Math.max(2, v * 36);
-    ctx.fillRect(i * w, (42 - h) / 2, Math.max(1, w - 1), h);
-  });
-}
 
 async function showEffect(params) {
   cancelSpeech();
@@ -1029,6 +1280,17 @@ function renderSettings() {
     state.status.settings = await api("save_settings", {ui_scale: 1, font_scale: 1});
     applyDisplay(state.status.settings); renderSettings();
   });
+  $("#settings-page").insertAdjacentHTML('afterbegin', `<div class="setting"><h3>软件更新</h3><label><input id="auto-check-updates" type="checkbox" ${s.auto_check_updates !== false ? 'checked' : ''}> 启动时自动检查更新</label><p>查询 GitHub 稳定版 Release，有新版本时提示前往下载。</p><button id="check-updates" class="subtle">检查更新</button><p id="update-status" role="status"></p></div>`);
+  $("#auto-check-updates").onchange = guarded(async e => { state.status.settings = await api('save_settings', {auto_check_updates:e.target.checked}); });
+  $("#check-updates").onclick = () => checkUpdates(true);
+  $("#settings-page").insertAdjacentHTML("afterbegin", `<div class="setting"><label>滚动方式 <select id="scroll-mode"><option value="smooth">${window.NativeHost ? "浏览器平滑" : "轻量平滑"}</option><option value="instant">即时滚动</option></select></label><p>${window.NativeHost ? "Windows 原生浏览器：滚轮、拖拽和显示同步由浏览器处理，支持高刷新率屏幕。" : "Qt 兼容引擎：未使用 Windows 原生浏览器显示链路。"} 幅度跟随 Windows 鼠标设置；即时滚动直接到位，系统减少动画优先。</p></div>`);
+  $('#scroll-mode').value = s.scroll_mode || 'smooth';
+  $('#scroll-mode').onchange = guarded(async () => {
+    const mode = $('#scroll-mode').value, previous = state.status.settings.scroll_mode;
+    WheelScroll.setMode(mode);
+    try { await api('save_settings', {scroll_mode:mode}); state.status.settings.scroll_mode = mode; }
+    catch(error) { WheelScroll.setMode(previous); $('#scroll-mode').value = previous || 'smooth'; throw error; }
+  });
   $("#settings-page").insertAdjacentHTML("afterbegin", `<div class="setting"><label><input id="infinite-scroll" type="checkbox" ${state.infiniteScroll ? "checked" : ""}> 滚动加载更多</label><p>默认关闭。开启后，滚动至列表底部自动追加内容，隐藏页码跳转；每次加载数量由列表下方设置。</p></div>`);
   $("#settings-page").insertAdjacentHTML("afterbegin", `<div class="setting"><label><input id="online-transcripts" type="checkbox" ${s.online_transcripts !== false ? "checked" : ""}> 按需补充公开台词</label><p>本地字幕优先；缺失时按下方顺序查询已启用来源，失败或未命中则继续补齐，缓存结果并显示来源。支持按音频键精确匹配简中字幕；Wiki 仅补充可唯一匹配的基础事件。关闭后不发起查询。</p></div>`);
   // 独立保存来源列表，开关、顺序与新增操作共享后端校验和持久化。
@@ -1120,9 +1382,9 @@ function renderSettings() {
       <div class="path-row" style="margin:8px 0;flex-wrap:wrap">
         <label style="flex:1;min-width:200px"><input type="checkbox" data-provider="${index}" ${source.enabled ? "checked" : ""}> ${esc(source.name)}</label>
         <button class="subtle" data-source-up="${index}" ${index === 0 ? "disabled" : ""}>上移</button>
-        ${["hsdata","wikigg","huiji","baidu"].includes(source.id) ? "" : `<button class="subtle" data-source-edit="${index}">编辑</button><button class="subtle" data-source-delete="${index}">删除</button>`}
+        ${["ifindhs","hsdata","wikigg","huiji","baidu"].includes(source.id) ? "" : `<button class="subtle" data-source-edit="${index}">编辑</button><button class="subtle" data-source-delete="${index}">删除</button>`}
       </div>`).join("")}</div>
-    <p>hsdata 按完整音频键匹配客户端字幕；Wiki.gg、百度百科、灰机按唯一基础事件补充。各来源覆盖不完整，灰机可能要求浏览验证。</p>
+    <p>ifindhs 与 hsdata 按完整音频键匹配；其他网站按唯一基础事件补充。网站要求访问验证时，可在应用内浏览后读取台词。</p>
     <details><summary>添加 / 编辑自定义来源</summary>
       <p>支持固定 JSON 协议或灰机式 MediaWiki 台词接口；普通网页地址不能直接作为通用接口。</p>
       <div class="path-row" style="flex-wrap:wrap;margin:10px 0">
@@ -1277,7 +1539,7 @@ $("#sort-direction").onclick = guarded(() => {
 });
 try {
   const saved = JSON.parse(localStorage.getItem("pengpeng.catalogOrder") || "{}");
-  for (const view of ["cards", "heroes"]) {
+  for (const view of ["cards", "heroes", "battlegrounds"]) {
     const order = saved?.[view];
     if (["default", "name", "id", "release"].includes(order?.sort) && typeof order.descending === "boolean")
       state.catalogOrder[view] = {sort: order.sort, descending: order.descending};
@@ -1298,6 +1560,12 @@ $("#locale").onchange = guarded(async () => {
 });
 $("#category").onchange = guarded(() => {
   state.category = $("#category").value;
+  state.subgroup = '';
+  state.offset = 0;
+  return refresh();
+});
+$('#audio-subgroup').onchange = guarded(() => {
+  state.subgroup = $('#audio-subgroup').value;
   state.offset = 0;
   return refresh();
 });
@@ -1308,13 +1576,13 @@ $("#favorites").onclick = guarded(() => {
   state.offset = 0;
   return refresh();
 });
-async function startScan() {
-  await api("scan");
+async function startScan(scope = 'all') {
+  await api("scan", {scope});
   state.scanning = true;
   $("#scan-button").disabled = true;
   $("#jobbar").hidden = false;
 }
-$("#scan-button").onclick = guarded(startScan);
+$("#scan-button").onclick = guarded(() => startScan());
 $("#cancel-scan").onclick = guarded(() => api("cancel_scan"));
 async function dismissIndexGuide(start) {
   if (start) await startScan();
@@ -1336,31 +1604,32 @@ $("#logs-toggle").onclick = () => {
 $("#close-logs").onclick = () => ($("#log-panel").hidden = true);
 $("#open-logs").onclick = () => host.openLogs();
 $("#play-pause").onclick = () => {
-  const tails = companionTracks.filter(t => !t.ended && !t.capped);
-  if (audio.ended && tails.length) {
-    const playing = tails.some(t => !t.paused);
-    tails.forEach(t => playing ? t.pause() : t.play().catch(e => toast(e.message)));
-  } else if (audio.ended && currentAudio) guarded(() => playAsset(currentAudio.assetid))();
+  if (audio.ended && currentAudio) guarded(() => playAsset(currentAudio.assetid, true))();
   else if (audio.paused) audio.play().catch(e => toast(e.message));
   else audio.pause();
 };
 function syncPlaybackButton() {
-  $("#play-pause").textContent = !audio.paused || companionTracks.some(t => !t.paused && !t.ended && !t.capped) ? "Ⅱ" : "▶";
+  const playing = !audio.paused;
+  document.querySelectorAll('[data-play]').forEach(button => {
+    const active = currentAudio?.assetid === button.dataset.play && playing;
+    const preparing = state.preparingAudio === button.dataset.play;
+    button.textContent = preparing ? '…' : active ? 'Ⅱ' : '▷';
+    button.setAttribute('aria-label', preparing ? '正在准备试听' : active ? '暂停' : '试听');
+    button.setAttribute('aria-pressed', String(active));
+  });
+  $("#play-pause").textContent = !audio.paused ? "Ⅱ" : "▶";
 }
-$("#volume").oninput = () => { audio.volume = Number($("#volume").value); companionTracks.forEach(t => t.volume = audio.volume); };
-$("#waveform").onclick = (e) => {
-  if (audio.duration)
-    audio.currentTime =
-      (e.offsetX / $("#waveform").clientWidth) * audio.duration;
-};
+$("#volume").oninput = () => { audio.volume = Number($("#volume").value); };
 $("#stop-player").onclick = stopPlayback;
+$("#replay-track").onclick = guarded(() => currentAudio && playAsset(currentAudio.assetid, true));
 function stopPlayback() {
   playGeneration++;
-  stopCompanions();
+  state.preparingAudio = null;
   audio.pause();
   audio.removeAttribute("src");
   audio.load();
   currentAudio = null;
+  waveform.reset();
   $("#player").hidden = true;
 };
 $("#export-track").onclick = guarded(
@@ -1375,7 +1644,7 @@ $("#export-selected").onclick = guarded(() => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
-    if ($("#image-viewer").open || $("#welcome").open) return;
+    if (document.querySelector('dialog[open]')) return;
     closeDetail();
     $("#log-panel").hidden = true;
   }
@@ -1388,16 +1657,7 @@ document.addEventListener("keydown", (e) => {
   }
 });
 // 页面辅助交互集中在此处，解析逻辑仍在后端；不引入前端构建链。
-let companionTracks = [], playGeneration = 0;
-function stopCompanions() {
-  companionTracks.forEach(track => { clearTimeout(track.capTimer); track.pause(); track.removeAttribute("src"); track.load(); });
-  companionTracks = [];
-}
-audio.addEventListener("pause", () => { if (!audio.ended) companionTracks.forEach(t => t.pause()); });
-audio.addEventListener("play", () => companionTracks.forEach(t => { if (!t.ended && !t.capped) t.play().catch(e => { if (e.name !== "AbortError" && companionTracks.includes(t)) toast("配套声音播放失败：" + e.message); }); }));
-audio.addEventListener("seeking", () => companionTracks.forEach(t => { if (Number.isFinite(t.duration)) t.currentTime = Math.min(audio.currentTime, t.duration, 15); }));
-audio.addEventListener("ended", syncPlaybackButton);
-// 主语音自然结束后，配套声音继续播放至自身结束或 15 秒上限。
+let playGeneration = 0;
 function openDetail() {
   if ($("#detail").hidden) state.returnFocus = document.activeElement;
   $("#detail").hidden = false;
@@ -1432,29 +1692,98 @@ function languageWarning() {
   $("#language-warning").hidden = !missing;
   $("#language-warning").textContent = "此客户端未安装所选语言的声音资源，卡牌文本仍可查看。请安装对应语言包后重新连接；通用音效不属于特定语言。";
 }
+function renderVoiceGroups(counts) {
+  let root = $("#voice-groups");
+  if (!root) {
+    root = document.createElement("div"); root.id = "voice-groups";
+    root.setAttribute("role", "group"); root.setAttribute("aria-label", "角色语音分类");
+    // 分组按钮只创建一次；后台字幕到达后更新数量，不替换用户的焦点节点。
+    root.innerHTML = Object.entries(VoiceGroups.labels).map(([key, label]) =>
+      `<button data-voice-group="${key}" aria-pressed="false">${label}<span></span></button>`).join("");
+    $("#voice-search").before(root);
+    root.addEventListener("click", e => {
+      const button = e.target.closest("[data-voice-group]");
+      if (!button) return;
+      state.voiceGroup = button.dataset.voiceGroup; state.voicePage = 1;
+      renderVoiceList(); queueVisibleSpeech();
+    });
+  }
+  root.hidden = state.voiceKind !== "voice";
+  root.querySelectorAll("button").forEach(button => {
+    const key = button.dataset.voiceGroup;
+    button.setAttribute("aria-pressed", String(key === state.voiceGroup));
+    button.querySelector("span").textContent = counts[key];
+    // 保留空分组与选中状态，搜索无匹配时用户仍能清楚看见当前筛选条件。
+    button.title = `${VoiceGroups.labels[key]} · 当前搜索匹配 ${counts[key]} 条`;
+  });
+}
+// 后台字幕/识别可以改变行高。滚动期间暂存界面更新，在最后一次滚动
+// 结束 160ms 后统一提交，避免重新布局打断手势；用户主动翻页/搜索仍即时响应。
+let lastDetailScroll = -Infinity, voiceRefresh = null, voiceRefreshTimer = 0;
+$('#detail').addEventListener('scroll', () => { lastDetailScroll = performance.now(); }, {passive:true});
+function queueVoiceRefresh(id = null) {
+  if (!voiceRefresh || voiceRefresh.generation !== state.detailGeneration)
+    voiceRefresh = {generation:state.detailGeneration, all:false, ids:new Set()};
+  if (id === null) voiceRefresh.all = true;
+  else voiceRefresh.ids.add(id);
+  clearTimeout(voiceRefreshTimer);
+  const flush = () => {
+    if (!voiceRefresh || voiceRefresh.generation !== state.detailGeneration) { voiceRefresh = null; return; }
+    const remaining = 160 - (performance.now() - lastDetailScroll);
+    if (remaining > 0) { voiceRefreshTimer = setTimeout(flush, remaining); return; }
+    const pending = voiceRefresh; voiceRefresh = null;
+    if (pending.all) renderVoiceList();
+    else pending.ids.forEach(updateRecognizedRows);
+  };
+  voiceRefreshTimer = setTimeout(flush, Math.max(0, 160 - (performance.now() - lastDetailScroll)));
+}
 function renderVoiceList() {
   if (!$("#voice-list")) return;
-  const items = state.voiceItems.filter(x => (x.kind || "voice") === state.voiceKind);
+  const scroll = $("#detail").scrollTop;
+  const query = ($("#voice-search")?.value || "").trim().toLowerCase();
+  const {rows: unique, counts} = VoiceGroups.select(state.voiceItems, state.voiceKind, state.voiceGroup, query);
+  renderVoiceGroups(counts);
   document.querySelectorAll("[data-voice-kind]").forEach(b => {
     b.classList.toggle("active", b.dataset.voiceKind === state.voiceKind);
-    const count = new Set(state.voiceItems.filter(x => (x.kind || "voice") === b.dataset.voiceKind).map(x => x.id)).size;
+    // 页签和分类使用同一事件口径：同一音频的不同触发条件分别计数。
+    const count = VoiceGroups.select(state.voiceItems, b.dataset.voiceKind, 'all', '').counts.all;
     b.textContent = (b.dataset.voiceKind === "voice" ? "角色语音" : "音效与音乐") + ` (${count})`;
   });
+  if (state.voiceLoading === state.detailGeneration) {
+    $('#voice-list').innerHTML = '<div class="empty"><span class="spinner"></span>正在读取声音，可继续切换分类…</div>';
+    return;
+  }
   $("#voice-list").className = "";
-  const unique = [...new Map(items.map(x => [x.id + ":" + x.event, x])).values()];
   // 台词优先露出，避免首屏被无字幕的攻击喘息、死亡和播报占满。
-  if (state.voiceKind === "voice") unique.sort((a, b) => Number(!!b.text) - Number(!!a.text));
+  // 保持资源顺序稳定；后台补齐台词时不把正在看的语音挪到其他页。
   const transcribed = unique.filter(x => x.text).length;
   const recognized = unique.filter(x => !x.text && x.speech_text).length;
-  const coverage = state.voiceKind === "voice" ? `<p class="transcript-summary">${transcribed} / ${unique.length} 条语音已有来源台词${recognized ? ` · ${recognized} 条语音识别（仅供参考）` : ""} · 来源台词优先显示</p>` : "";
-  $("#voice-list").innerHTML = coverage + `<p class="note">${esc(state.transcriptNote || "")}</p>` + `<p class="note">${state.generalAudio ? "通用音效已开启：随从登场附加落地与初始关键词声音，并播放该事件引用的种族 / 材质垫音；时序为试听近似。 " : ""}${state.pairedAudio ? "配套播放已开启：仅混合同一事件引用中的音效 / 音乐，起始时间为试听近似。" : "未开启卡牌配套音效 / 音乐。"}</p>` + voiceRows(unique) + errorBox(state.voiceErrors);
+  const coverage = state.voiceKind === "voice" ? `<p class="transcript-summary">${transcribed} / ${unique.length} 条语音已有来源台词${recognized ? ` · ${recognized} 条语音识别（仅供参考）` : ""} · 台词在后台补齐</p>` : "";
+  const size = state.voicePageSize || 24, pages = Math.max(1, Math.ceil(unique.length / size));
+  state.voicePage = Math.min(pages, Math.max(1, state.voicePage || 1));
+  const offset = (state.voicePage - 1) * size;
+  const pageItems = unique.slice(offset, offset + size);
+  state.voiceVisibleIds = new Set(pageItems.map(item => item.id));
+  const pager = `<nav class="voice-pagination" aria-label="语音分页"><button id="voice-prev" ${state.voicePage <= 1 ? 'disabled' : ''}>上一页</button><label>第 <input id="voice-page" aria-label="语音页码" type="number" min="1" max="${pages}" value="${state.voicePage}"> / ${pages} 页</label><button id="voice-next" ${state.voicePage >= pages ? 'disabled' : ''}>下一页</button><label>每页 <select id="voice-page-size" aria-label="每页语音数量">${[12,24,48,96].map(n => `<option ${n===size?'selected':''}>${n}</option>`).join('')}</select> 条</label><small>共 ${unique.length} 条</small></nav>`;
+  $("#voice-list").innerHTML = (state.voiceItems.length ? `<p class="voice-ready">✓ 音频已就绪，可立即试听与导出${state.transcriptPending === state.detailGeneration ? ' · 台词正在后台补充' : ''}</p>` : '') + coverage +
+    `<p id="speech-inline-status" class="note" role="status"></p>` +
+    (state.transcriptNote ? `<details class="transcript-diagnostics"><summary>台词来源状态</summary><p class="note">${esc(state.transcriptNote)}</p></details>` : '') +
+    voiceRows(pageItems) + (!unique.length ? '<p class="empty">没有匹配的语音，请调整筛选。</p>' : '') + pager + errorBox(state.voiceErrors);
+  const go = page => { state.voicePage = Math.min(pages, Math.max(1, Number(page) || 1)); renderVoiceList(); $("#voice-search").scrollIntoView({block:'start'}); queueVisibleSpeech(); };
+  $("#voice-prev").onclick = () => go(state.voicePage - 1);
+  $("#voice-next").onclick = () => go(state.voicePage + 1);
+  $("#voice-page").onchange = e => go(e.target.value);
+  $("#voice-page-size").onchange = guarded(async e => {
+    state.voicePageSize = Number(e.target.value); state.voicePage = 1;
+    state.status.settings.voice_page_size = state.voicePageSize;
+    renderVoiceList();
+    await api('save_settings', {voice_page_size: state.voicePageSize});
+    queueVisibleSpeech();
+  });
   bindVoices($("#voice-list"));
+  syncPlaybackButton();
   if (state.voiceKind === "voice") {
-    const note = document.createElement("p");
-    note.className = "note";
-    note.setAttribute("role", "status");
-    note.textContent = state.speechNote || "";
-    $("#voice-list").prepend(note);
+    $("#speech-inline-status").textContent = state.speechNote || "";
   }
   // 重试只补缺失台词；请求期间禁用，切卡/切语言后旧结果由 generation 丢弃。
   if (state.voiceKind === "voice" && state.voiceLocale === "zhcn" &&
@@ -1464,7 +1793,7 @@ function renderVoiceList() {
     retry.id = "retry-transcripts";
     retry.className = "subtle";
     retry.disabled = state.transcriptPending === state.detailGeneration;
-    retry.textContent = retry.disabled ? "正在查询台词…" : "重试获取缺失台词";
+    retry.textContent = retry.disabled ? "后台补充台词中 · 不影响试听" : "重试获取缺失台词";
     retry.onclick = guarded(() => supplementTranscripts(state.card, state.detailGeneration, true));
     $("#voice-list").prepend(retry);
   }
@@ -1472,20 +1801,25 @@ function renderVoiceList() {
   if (state.voiceKind === "voice" && state.transcriptSources?.length) {
     const controls = document.createElement("div");
     controls.className = "transcript-actions";
-    controls.innerHTML = state.transcriptSources.map(id => `<button class="subtle" data-transcript-source="${Number(id)}">在浏览窗口读取台词${state.transcriptSources.length > 1 ? ` · ${Number(id)}` : ""}</button>`).join("");
+    controls.innerHTML = state.transcriptSources.map(id => `<button class="subtle" data-transcript-source="${esc(id)}">${String(id).startsWith("ifindhs:") ? "ifindhs · 浏览读取" : "灰机 · 浏览读取"}</button>`).join("");
     $("#voice-list").prepend(controls);
     controls.querySelectorAll("button").forEach(button => button.onclick = guarded(async () => {
       const card = state.card, generation = state.detailGeneration;
-      const result = await api("transcript_browser", {dbfid: Number(button.dataset.transcriptSource)});
+      const source = button.dataset.transcriptSource;
+      const parts = source.split(":");
+      const result = await api("transcript_browser", parts[0] === "ifindhs"
+        ? {dbfid: card.record.dbfid, source: "ifindhs", cardid: parts[1], name: parts.slice(2).join(":")}
+        : {dbfid: Number(source)});
       if (result.saved && generation === state.detailGeneration) await supplementTranscripts(card, generation);
     }));
   }
   attachAudioExports($("#voice-list"));
+  $("#detail").scrollTop = scroll;
 }
 // 只改变布局样式，保留卡片节点、已解码图片和进行中的缩略图队列。
 // input 负责即时预览，change 才保存，拖拽过程中不反复写入工作区设置。
 function applyCatalogDisplay() {
-  const active = ["cards", "heroes"].includes(state.view);
+  const active = ["cards", "heroes", "battlegrounds"].includes(state.view);
   const {mode, size} = state.catalogDisplay;
   $("#results").classList.toggle("catalog-list", active && mode === "list");
   $("#results").style.setProperty("--tile-width", `${size}px`);
@@ -1493,14 +1827,19 @@ function applyCatalogDisplay() {
 }
 function renderCatalogDisplay() {
   const node = $("#catalog-display");
-  node.hidden = !["cards", "heroes"].includes(state.view);
+  node.hidden = !["cards", "heroes", "battlegrounds"].includes(state.view);
   if (node.hidden) return;
+  $("#npc-shortcut").hidden = state.view !== 'heroes';
+  $("#npc-shortcut").onclick = guarded(async () => {
+    state.filters = {hero_group:'npc'}; state.query = ''; $("#search").value = '';
+    state.offset = 0; state.favorites = false; renderFilters(); rememberView(); await refresh();
+  });
   const sync = () => {
     const {mode, size} = state.catalogDisplay;
     node.querySelectorAll("[data-layout]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.layout === mode)));
     $("#catalog-size").value = size;
     $("#catalog-size").disabled = mode === "list";
-    $("#catalog-size-value").textContent = mode === "list" ? "列表" : `${Math.round(size / 220 * 100)}%`;
+    $("#catalog-size-value").textContent = mode === "list" ? "列表" : `${Math.round(size / 180 * 100)}%`;
     applyCatalogDisplay();
   };
   node.querySelectorAll("[data-layout]").forEach(b => b.onclick = () => {
@@ -1509,33 +1848,36 @@ function renderCatalogDisplay() {
   $("#catalog-size").oninput = e => { state.catalogDisplay.size = Number(e.target.value); sync(); };
   $("#catalog-size").onchange = rememberView;
   $("#reset-layout").onclick = () => {
-    state.catalogDisplay = {mode: "grid", size: 220}; sync(); rememberView();
+    state.catalogDisplay = {mode: "grid", size: 180}; sync(); rememberView();
   };
   sync();
 }
 function renderFilters() {
   const node = $("#card-filters");
-  node.hidden = !["cards", "heroes"].includes(state.view);
+  node.hidden = !["cards", "heroes", "battlegrounds"].includes(state.view);
   if (node.hidden || !state.status?.filters) return;
   const f = state.status.filters;
-  const make = (key, label, values) => `<label>${label}<select data-filter="${key}" aria-label="${label}"><option value="">全部${label}</option>${values.map(x => `<option value="${esc(x.value)}" ${String(state.filters[key]) === String(x.value) ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select></label>`;
+  const make = (key, label, values = []) => `<label>${label}<select data-filter="${key}" aria-label="${label}"><option value="">全部${label}</option>${values.map(x => `<option data-kind="${esc(x.kind || "大系列")}" value="${esc(x.value)}" ${String(state.filters[key]) === String(x.value) ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select></label>`;
   const cost = Array.from({length: 11}, (_, i) => ({value: i === 10 ? "10+" : String(i), label: i === 10 ? "10 费及以上" : `${i} 费`}));
   node.innerHTML = state.view === "heroes"
     ? make("hero_group", "英雄职业", f.hero_groups) + make("battlegrounds", "酒馆皮肤", [{value: "exclude", label: "不显示酒馆皮肤"}, {value: "only", label: "只显示酒馆皮肤"}])
+    : state.view === "battlegrounds" ? make("tier", "酒馆等级", Array.from({length:7},(_,i)=>({value:String(i+1),label:`${i+1} 星`}))) + make("bg_pool", "随从池", [{value:"1",label:"客户端标记可入池"},{value:"0",label:"衍生 / 金色 / 非入池"}])
     : make("set", "系列", f.sets) + make("format", "赛制", f.formats) + make("class", "职业", f.classes) + make("rarity", "稀有度", f.rarities) + make("cost", "法力消耗", cost) + make("type", "类别", f.types) + make("collectible", "收集状态", [{value: "1", label: "可收集"}, {value: "0", label: "衍生 / 非收集"}]);
+  node.innerHTML += make("race", "种族", f.races) + make("keyword", "词条", f.keywords);
   if (state.view === "heroes") node.querySelector('[data-filter="battlegrounds"] option').textContent = "显示酒馆皮肤";
-  node.insertAdjacentHTML("beforeend", '<button id="reset-filters" class="subtle">重置筛选</button>');
+
   node.querySelectorAll("select").forEach(select => select.onchange = guarded(() => {
     state.filters[select.dataset.filter] = select.value;
     state.offset = 0;
     return refresh();
   }));
-  $("#reset-filters").onclick = guarded(resetView);
+
   SelectUI.refresh();
 }
 async function startup() {
   const status = await api("status");
   state.status = status;
+  if (status.settings.auto_check_updates !== false) checkUpdates(false);
   state.viewStates = status.settings.view_state || {};
   state.preferencesReady = true;
   applyDisplay(status.settings);
@@ -1557,8 +1899,11 @@ $("#welcome-connect").onclick = guarded(async () => {
   } finally { $("#welcome-connect").disabled = false; $("#welcome-connect").textContent = "打开资源工作台 →"; }
 });
 $("#welcome").addEventListener("cancel", () => changeView("settings"));
-new QWebChannel(qt.webChannelTransport, (channel) => {
-  host = channel.objects.host;
+connectHost((connectedHost) => {
+  host = connectedHost;
+  const motion = matchMedia('(prefers-reduced-motion: reduce)');
+  host.setSmoothScrolling(!motion.matches);
+  motion.addEventListener('change', () => host.setSmoothScrolling(!motion.matches));
   host.response.connect(receive);
   guarded(startup)();
 });
@@ -1626,10 +1971,9 @@ async function loadMore() {
 }
 $("#load-more").onclick = guarded(loadMore);
 // 滚动事件只在哨兵接近视口时发出一页请求，失败后可用按钮重试。
-window.addEventListener("scroll", () => {
-  if (state.infiniteScroll && $("#load-more").getBoundingClientRect().top < innerHeight + 180)
-    guarded(loadMore)();
-}, {passive: true});
+new IntersectionObserver(entries => {
+  if (entries.some(e => e.isIntersecting) && state.infiniteScroll) guarded(loadMore)();
+}, {rootMargin: '180px'}).observe($('#load-more'));
 function attachAudioExports(root) {
   root.querySelectorAll("[data-export]").forEach(source => {
     const folder = state.audioExports.get(source.dataset.export);
@@ -1651,7 +1995,7 @@ async function supplementTranscripts(card, generation, force = false) {
   }
   state.transcriptPending = generation;
   state.transcriptNote = "正在按需查询公开台词，本地试听与导出可继续使用…";
-  renderVoiceList();
+  queueVoiceRefresh();
   try {
     const data = await api("transcripts", {dbfid: card.record.dbfid, locale: state.voiceLocale, items: state.voiceItems, force});
     if (generation !== state.detailGeneration) return;
@@ -1667,7 +2011,7 @@ async function supplementTranscripts(card, generation, force = false) {
     if (state.transcriptPending === generation) state.transcriptPending = null;
   }
   if (generation === state.detailGeneration) {
-    renderVoiceList();
+    queueVoiceRefresh();
     await recognizeMissing(generation);
   }
 }
@@ -1683,11 +2027,11 @@ async function recognizeMissing(generation, retryId = null) {
   if (generation !== state.detailGeneration || state.speechRun || state.status.settings.speech_recognition === false) return;
   if (!["zhcn", "enus"].includes(state.voiceLocale)) {
     state.speechNote = "此语言暂不支持轻量语音识别；原有台词查询、试听和导出仍可使用。";
-    renderVoiceList();
+    queueVoiceRefresh();
     return;
   }
   const items = [...new Map(state.voiceItems.filter(a => a.kind === "voice" && !a.text &&
-    (retryId ? a.id === retryId : !a.speech_done && !a.speech_error)).map(a => [a.id, a])).values()];
+    (retryId ? a.id === retryId : state.voiceVisibleIds?.has(a.id) && !a.speech_done && !a.speech_error)).map(a => [a.id, a])).values()];
   if (!items.length) return;
   const run = {generation}, locale = state.voiceLocale;
   state.speechRun = run;
@@ -1697,17 +2041,21 @@ async function recognizeMissing(generation, retryId = null) {
     for (const item of items) {
       if (!active()) return;
       // 网络来源重试可能在等待期间补齐文字；识别永远不盖过已有台词。
-      if (state.voiceItems.some(a => a.id === item.id && a.text)) continue;
-      state.speechNote = `正在准备语音识别 ${++completed} / ${items.length}；试听与导出可继续使用…`;
-      renderVoiceList();
+      if ((!retryId && !state.voiceVisibleIds?.has(item.id)) || state.voiceItems.some(a => a.id === item.id && a.text)) continue;
+      state.speechCount = `${++completed} / ${items.length}`;
+      state.speechNote = `后台语音识别 ${state.speechCount}；试听与导出可继续使用…`;
+      if ($('#speech-inline-status')) $('#speech-inline-status').textContent = state.speechNote;
       try {
         const audioData = await api("audio", {assetid: item.id, locale});
         if (!active()) return;
+        // 切分组/翻页后不继续识别旧页；已经完成的解码缓存仍可供下次试听复用。
+        if (!retryId && !state.voiceVisibleIds?.has(item.id)) continue;
         const result = await api("speech", {paths: audioData.samples.map(s => s.path), locale, force: !!retryId});
         if (!active()) return;
         state.voiceItems.forEach(a => { if (a.id === item.id && !a.text) Object.assign(a, {
           speech_text: result.text, speech_cached: result.cached, speech_done: true, speech_error: ""
         }); });
+        queueVoiceRefresh(item.id);
       } catch (error) {
         if (!active()) return;
         state.voiceItems.forEach(a => { if (a.id === item.id) a.speech_error = error.message; });
@@ -1718,6 +2066,105 @@ async function recognizeMissing(generation, retryId = null) {
     }
     if (active()) state.speechNote = "语音识别完成；语音识别文字仅供参考，不保证准确性。";
   } finally {
-    if (active()) { state.speechRun = null; renderVoiceList(); }
+    if (active()) { state.speechRun = null; queueVoiceRefresh(); }
   }
+  if (generation === state.detailGeneration) queueVisibleSpeech();
 }
+
+function queueVisibleSpeech() {
+  // 只自动识别当前页；旅店老板等上千条语音不再一打开就全部解码。
+  // 已在运行的批次完成后会自然处理用户切换到的新页。
+  if (state.tab === 'voices' && state.voiceKind === 'voice' && state.transcriptPending !== state.detailGeneration)
+    setTimeout(() => recognizeMissing(state.detailGeneration), 0);
+}
+
+// 词条气泡独立于详情的重绘；通过 textContent 放入解释，避免客户端富文本注入。
+document.addEventListener('click', event => {
+  const relation = event.target.closest('[data-text-relation]');
+  if (relation) {
+    const data = state.card?.text_links?.[Number(relation.dataset.textRelation)];
+    if (!data) return;
+    if (data.cards.length === 1) { showCard(data.cards[0].id, 'related'); return; }
+    const dialog = $('#relation-dialog');
+    $('#relation-title').textContent = data.label + ' · ' + data.cards.length + ' 张';
+    $('#relation-choices').innerHTML = data.cards.map(r=>`<button class="related-card" data-choice="${esc(r.id)}"><img class="relation-thumb" data-relation-image="${esc(r.id)}" alt=""><b>${esc(r.name)}</b><small>${esc(r.variant || r.id)} ↗</small></button>`).join('');
+    dialog.querySelectorAll('[data-choice]').forEach(b=>b.onclick=()=>{dialog.close();showCard(b.dataset.choice,'related');});
+    dialog.showModal(); loadRelationImages(dialog); return;
+  }
+  const keyword = event.target.closest('[data-keyword]');
+  document.querySelector('.keyword-popover')?.remove();
+  if (!keyword) return;
+  const data = state.card?.keywords.find(k => k.name === keyword.dataset.keyword);
+  if (!data) return;
+  const bubble = document.createElement('div');
+  bubble.className = 'keyword-popover'; bubble.setAttribute('role', 'status');
+  const title = document.createElement('strong'), text = document.createElement('p');
+  title.textContent = plain(data.name); text.textContent = plain(data.text);
+  bubble.append(title, text); document.body.append(bubble);
+  const rect = logicalViewport(keyword.getBoundingClientRect());
+  bubble.style.left = `${Math.max(12, Math.min(rect.left, rect.viewportWidth - bubble.offsetWidth - 12))}px`;
+  bubble.style.top = `${Math.max(12, Math.min(rect.bottom + 8, rect.viewportHeight - bubble.offsetHeight - 12))}px`;
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') document.querySelector('.keyword-popover')?.remove();
+});
+
+// 更新查询在独立网络线程执行；自动失败不弹窗，手动检查明确显示错误。
+let updateChecking = false;
+async function checkUpdates(manual) {
+  if (updateChecking) return;
+  updateChecking = true;
+  const button = $("#check-updates"), status = $("#update-status");
+  if (button) button.disabled = true;
+  if (status) status.textContent = '正在查询 GitHub 稳定版本…';
+  try {
+    const result = await api('check_updates');
+    if (status) status.textContent = result.message;
+    if (result.available) {
+      const dialog = $("#update-dialog");
+      $("#update-description").textContent = `当前 v${result.current}，发现 ${result.latest}。下载并解压新版后即可使用。`;
+      $("#update-download").href = result.url;
+      if (!dialog.open) dialog.showModal();
+    } else if (manual) toast(result.message);
+  } catch (error) {
+    if (status) status.textContent = error.message;
+    if (manual) toast(error.message);
+  } finally { updateChecking = false; if (button) button.disabled = false; }
+}
+$("#update-close").onclick = () => $("#update-dialog").close();
+
+// 对不可细分的原生解码/网络等待，显示真实阶段与等待时间，不伪造百分比。
+// 初始化和台词有自己的进度区域；这里覆盖检索、媒体、特效、导出和诊断。
+function updateActivity() {
+  const node = $('#activity-status');
+  if (!node) return;
+  const labels = {list_cards:'检索卡牌', list_assets:'检索资源', card:'读取卡牌详情',
+    thumbnail:'解码缩略图', portrait:'读取原画', card_render:'读取完整卡面',
+    card_audio:'解析语音引用', audio:'解码音频', related_audio:'解析关联声音',
+    general_audio:'解析配套音效', effect:'解析特效', export:'准备导出', diagnostics:'检查资源'};
+  const tasks = [...pending.values()].filter(p => labels[p.method]);
+  const task = tasks.find(p => p.method !== 'thumbnail') || tasks[0];
+  node.hidden = !task;
+  if (task) node.textContent = `${task.stage || labels[task.method]} · ${Math.floor((performance.now()-task.started)/1000)} 秒${tasks.length > 1 ? ` · ${tasks.length} 项处理中` : ''}`;
+}
+setInterval(updateActivity, 1000);
+
+// 一条识别完成只替换它的可见行，不销毁分页、筛选框和其余正在交互的按钮。
+function updateRecognizedRows(id) {
+  document.querySelectorAll('[data-voice-row]').forEach(row => {
+    if (row.dataset.voiceRow !== id) return;
+    const item = state.voiceItems.find(item => item.id === id);
+    if (!item) return;
+    const template = document.createElement('template');
+    template.innerHTML = voiceRows([item]);
+    const next = template.content.firstElementChild;
+    const focused = row.contains(document.activeElement) ? document.activeElement.dataset : null;
+    row.replaceWith(next);
+    bindVoices(next); attachAudioExports(next);
+    if (focused?.play) next.querySelector('[data-play]')?.focus({preventScroll:true});
+    if (focused?.speech) next.querySelector('[data-speech]')?.focus({preventScroll:true});
+  });
+  syncPlaybackButton();
+}
+
+$("#only-new").onchange = () => {state.filters.new = $("#only-new").checked ? "1" : ""; state.offset=0; refresh();};

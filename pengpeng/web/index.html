@@ -9,9 +9,11 @@
     />
     <title>砰砰解析台</title>
     <link rel="stylesheet" href="style.css" />
-    <script src="qrc:///qtwebchannel/qwebchannel.js" defer></script>
+    <script src="host.js" defer></script>
     <script src="effects.js" defer></script>
     <script src="controls.js" defer></script>
+    <script src="scrolling.js" defer></script>
+    <script src="interaction.js" defer></script>
     <script src="app.js" defer></script>
   </head>
   <body>
@@ -28,6 +30,7 @@
         <button class="nav" data-view="heroes">
           <span>♜</span>英雄图鉴 <small>02</small>
         </button>
+        <button class="nav" data-view="battlegrounds"><span>⚑</span>战棋图鉴 <small>BG</small></button>
         <button class="nav" data-view="audio">
           <span>≋</span>声音资料库 <small>03</small>
         </button>
@@ -45,7 +48,7 @@
           <i id="connection-dot"></i
           ><span id="connection">正在连接本地资源</span>
         </div>
-        <div id="sidebar-version">BOOM LAB / v0.4.0</div>
+        <div id="sidebar-version">BOOM LAB / v0.12.0</div>
         <a href="https://space.bilibili.com/315312"
           >朝禊ASOGI <span>↗</span></a
         >
@@ -97,20 +100,24 @@
           <select id="category" aria-label="音效分类" hidden>
             <option value="">所有分类</option>
           </select>
+          <select id="audio-subgroup" aria-label="声音场景子分组" hidden><option value="">所有场景</option></select>
           <button id="reset-search" class="subtle">重置搜索与筛选</button><button id="favorites" class="subtle" aria-pressed="false">
             ☆ 收藏
           </button>
         </div>
-        <div id="card-filters" class="filter-panel"></div>
+        <label class="only-new"><input id="only-new" type="checkbox"> 仅看本次更新 <span class="new-badge inline">NEW</span></label>
+        <div id="audio-library-note" class="note" hidden></div>
+          <div id="card-filters" class="filter-panel"></div>
         <div id="catalog-display" class="catalog-display" role="group" aria-label="图鉴显示方式">
           <div class="layout-switch" role="group" aria-label="视图切换">
             <button class="subtle" data-layout="grid" aria-pressed="true">▦ 卡片视图</button>
             <button class="subtle" data-layout="list" aria-pressed="false">☷ 列表视图</button>
           </div>
           <label for="catalog-size">卡片大小 · 紧凑到宽松</label>
-          <input id="catalog-size" type="range" min="180" max="300" step="10" value="220">
+          <input id="catalog-size" type="range" min="140" max="280" step="10" value="180">
           <output id="catalog-size-value" for="catalog-size">100%</output>
           <button id="reset-layout" class="subtle">恢复默认布局</button>
+          <button id="npc-shortcut" class="subtle" hidden>调酒师与旅店老板 ↗</button>
         </div>
         <div id="catalog-order" class="catalog-order" role="group" aria-label="图鉴排序">
           <label for="sort-by">排序方式</label>
@@ -192,7 +199,13 @@
         id="waveform"
         width="400"
         height="42"
-        aria-label="音频波形，点击定位"
+        role="slider"
+        tabindex="0"
+        aria-valuemin="0"
+        aria-valuemax="0"
+        aria-valuenow="0"
+        aria-label="播放进度"
+        title="点击或拖动定位；方向键 5 秒，Shift 加方向键 1 秒，Home / End 跳至首尾"
       ></canvas
       ><span id="track-time">0:00</span
       ><label class="volume"
@@ -204,11 +217,13 @@
           step="0.01"
           value="0.75" /></label
       ><button id="export-track" class="subtle">↓ WAV</button
-      ><button id="stop-player" class="icon-button">✕</button
+      ><button id="replay-track" class="icon-button" aria-label="从头重播" title="从头重播">↻</button><button id="stop-player" class="icon-button">✕</button
       ><audio id="audio"></audio>
     </footer>
     <dialog id="image-viewer" aria-label="卡面大图"><div class="viewer-top"><strong id="viewer-title"></strong><button id="viewer-zoom" class="subtle">原始尺寸</button><button id="viewer-close" class="icon-button" aria-label="关闭大图">✕</button></div><div class="viewer-canvas"><img id="viewer-image" alt="卡面大图"></div></dialog>
-    <dialog id="welcome" aria-labelledby="welcome-title"><img src="icon.svg" class="welcome-icon" alt=""><p class="eyebrow">WELCOME TO BOOM LAB</p><h2 id="welcome-title">欢迎来到砰砰解析台</h2><p>选择炉石安装目录，开始探索卡牌原画与声音。</p><p class="note">请选择包含 Data 文件夹的 Hearthstone 目录。</p><div class="path-row"><input id="welcome-path" aria-label="炉石安装目录" placeholder="例如 F:\Games\Hearthstone"><button id="welcome-browse" class="subtle">浏览…</button></div><p id="welcome-error" class="warning" hidden></p><div class="welcome-actions"><button id="welcome-later" class="subtle">稍后设置</button><button id="welcome-connect" class="primary">打开资源工作台 →</button></div></dialog>
+    <dialog id="welcome" aria-labelledby="welcome-title"><img src="icon.svg" class="welcome-icon" alt=""><p class="eyebrow">WELCOME TO BOOM LAB</p><h2 id="welcome-title">欢迎来到砰砰解析台</h2><p>选择炉石安装目录，开始探索卡牌原画与声音。</p><p class="note">请选择包含 Data 文件夹的 Hearthstone 目录。</p><div class="path-row"><input id="welcome-path" aria-label="炉石安装目录" placeholder="例如 F:\Games\Hearthstone"><button id="welcome-browse" class="subtle">浏览…</button></div><p id="welcome-progress" class="loading-stage" role="status" hidden></p><p id="welcome-error" class="warning" hidden></p><div class="welcome-actions"><button id="welcome-later" class="subtle">稍后设置</button><button id="welcome-connect" class="primary">打开资源工作台 →</button></div></dialog>
+    <dialog id="game-update-dialog" aria-labelledby="game-update-title"><p class="eyebrow">CLIENT UPDATE</p><h2 id="game-update-title">发现炉石客户端更新</h2><p id="game-update-message"></p><div class="dialog-actions"><button id="game-update-later" class="subtle">稍后分析</button><button id="game-analyze" class="primary">重新分析游戏文件</button></div></dialog>
+    <dialog id="relation-dialog" aria-labelledby="relation-title"><header class="relation-header"><h2 id="relation-title"></h2><button id="relation-close" class="icon-button" aria-label="关闭衍生物列表" title="关闭（Esc）" autofocus>×</button></header><div id="relation-choices"></div></dialog>
     <dialog id="index-guide" aria-labelledby="index-guide-title">
       <p class="eyebrow">RESOURCE INDEX</p><h2 id="index-guide-title">让资源查找更顺畅</h2>
       <p>建议建立完整资源索引，方便搜索全部声音、纹理与特效。</p>
@@ -216,6 +231,8 @@
       <p class="note">暂时不建立也能查看卡牌、按需读取语音。首次定位复杂资源仍可能明显慢于已有索引的情况。随时可以点击右上角「建立完整资源索引」按钮开始或继续。</p>
       <div class="welcome-actions"><button id="index-later" class="subtle" autofocus>暂不建立，先看卡牌</button><button id="index-start" class="primary">开始建立索引</button></div>
     </dialog>
+    <dialog id="update-dialog" aria-labelledby="update-title"><h2 id="update-title">发现新版本</h2><p id="update-description"></p><div class="welcome-actions"><button id="update-close" class="subtle">稍后</button><a id="update-download" class="primary" href="https://github.com/AsaMisogi/Heartstone-Tool-Resource-Lab/releases">前往 GitHub 下载 ↗</a></div></dialog>
+    <div id="activity-status" role="status" hidden></div>
     <div id="toast" role="status" hidden></div>
   </body>
 </html>

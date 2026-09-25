@@ -84,10 +84,13 @@ def test_service_mixes_only_selected_voice_and_keeps_raw_export(tmp_path):
     sf.write(main, np.ones(8000) * 0.1, 8000)
     sf.write(tail, np.ones(16000) * 0.2, 8000)
     service.audio = Mock(side_effect=lambda assetid: {'samples': [{'path': str(main if assetid == 'v' else tail)}]})
+    clock = {'seconds': 0, 'resolved': True, 'anchor': 'card_event'}
     service.card_audio = Mock(return_value={'items': [
-        {'id': 'v', 'kind': 'voice', 'group': 'play'}, {'id': 's', 'kind': 'sound', 'group': 'play'},
+        {'id': 'v', 'name': 'Voice', 'kind': 'voice', 'group': 'play', 'timing': clock},
+        {'id': 's', 'name': 'Sound', 'kind': 'sound', 'group': 'play', 'timing': clock},
         {'id': 'other', 'kind': 'sound', 'group': 'death'}], 'errors': []})
-    service.general_audio = Mock(return_value={'items': [{'id': 's'}], 'errors': []})
+    service.general_audio = Mock(return_value={'items': [
+        {'id': 's', 'name': 'Sound', 'timing': clock}], 'errors': []})
     raw = service.export(assetids=['v'], context_cardid='CARD')
     assert Path(raw['files'][0]).read_bytes() == main.read_bytes()
     mixed = service.export(assetids=['v'], context_cardid='CARD', mix_voice=True,
@@ -131,9 +134,9 @@ def test_catalog_display_preferences():
     saved = validate_views({'cards': {'display': {'mode': 'list', 'size': 180}},
                             'heroes': {'display': {'mode': 'grid', 'size': 300}}})
     assert saved['cards']['display'] == {'mode': 'list', 'size': 180}
-    assert saved['heroes']['display'] == {'mode': 'grid', 'size': 300}
+    assert saved['heroes']['display'] == {'mode': 'grid', 'size': 280}
     for display in (None, [], {'mode': 'bad', 'size': 'large'}, {'size': True}):
-        assert validate_views({'cards': {'display': display}})['cards']['display'] == {'mode': 'grid', 'size': 220}
-    assert validate_views({'cards': {}})['cards']['display']['size'] == 220
-    for size, expected in ((0, 180), (10000, 300)):
+        assert validate_views({'cards': {'display': display}})['cards']['display'] == {'mode': 'grid', 'size': 180}
+    assert validate_views({'cards': {}})['cards']['display']['size'] == 180
+    for size, expected in ((0, 140), (10000, 280)):
         assert validate_views({'cards': {'display': {'size': size}}})['cards']['display']['size'] == expected

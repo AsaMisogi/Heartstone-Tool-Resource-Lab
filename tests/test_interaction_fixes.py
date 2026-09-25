@@ -18,9 +18,9 @@ from pengpeng.unity import UnityReader
 def test_sound_bundle_does_not_turn_music_or_sfx_into_voice():
     bundle = 'soundotherminion_base_zhcn-audio-0.unity3d'
     assert audio_category('VO_EX1_116_Play_01', bundle) == '角色语音'
-    assert audio_category('EX1_116_MusicStinger', bundle) == '音乐 / 登场曲'
-    assert audio_category('Minion_Impact', bundle) == '战斗 / 法术'
-    assert audio_category('ui_button', 'playsounds_base_zhcn-audio-0.unity3d') == '界面 / 交互'
+    assert audio_category('EX1_116_MusicStinger', bundle) == '短音乐 / 登场曲'
+    assert audio_category('Minion_Impact', bundle) == '音效'
+    assert audio_category('ui_button', 'playsounds_base_zhcn-audio-0.unity3d') == '音效'
 
 
 def test_settings_persist_pagination_mode_and_validate_capacity(tmp_path):

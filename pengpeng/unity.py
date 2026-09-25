@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 from collections import OrderedDict, deque
 from pathlib import Path
@@ -19,7 +20,7 @@ log = logging.getLogger(__name__)
 
 
 class UnityReader:
-    def __init__(self, root: Path, store):
+    def __init__(self, root: Path, store, progress=lambda message, done, total: None):
         self.root = root / 'Data' / 'Win'
         self.store = store
         self.cache = OrderedDict()
@@ -27,6 +28,15 @@ class UnityReader:
         self.file_bundle = {}
         self.directories = {}
         UnityPy.config.FALLBACK_UNITY_VERSION = '6000.3.11f1'
+        # 索引目录已由安装清单指纹隔离。热启动直接读取解析后的清单，
+        # 避免每次解压所有语言的 manifest；不缓存 Unity 原生对象。
+        cached = store.get_meta('manifest_v1')
+        if cached:
+            self.catalog, self.cards, self.dependencies, self.locales = cached
+            progress('读取资源清单缓存', 1, 1)
+            return
+        manifests = list(self.root.glob('asset_manifest_*.unity3d'))
+        progress('读取基础资源清单', 0, len(manifests) + 1)
         env = self.load('asset_manifest.unity3d')
         def read(suffix):
             return next(v.read_typetree() for k, v in env.container.items() if k.lower().endswith(suffix))
@@ -39,12 +49,15 @@ class UnityReader:
         self.dependencies = {name: [names[i] for i in deps['allDependencies'] if names[i] != name]
                              for name, deps in zip(names, data['bundles'])}
         self.locales = {}
-        for path in self.root.glob('asset_manifest_*.unity3d'):
+        for index, path in enumerate(manifests):
+            progress('读取语言资源清单 · ' + path.stem, index + 1, len(manifests) + 1)
             locale = path.stem.removeprefix('asset_manifest_').lower()
             local = self.load(path.name)
             data = next(v.read_typetree() for k, v in local.container.items() if 'asset_catalog_locale_' in k)
             self.locales[locale] = {a['baseGuid']: (a['guid'], data['m_bundleNames'][a['bundleId']])
                                     for a in data['m_assets']}
+        store.set_meta('manifest_v1', [self.catalog, self.cards, self.dependencies, self.locales])
+        progress('资源清单就绪', len(manifests) + 1, len(manifests) + 1)
         log.info('资源清单：%s 张卡牌，%s 项基础资源，语言包 %s', len(self.cards), len(self.catalog), list(self.locales))
 
     def load(self, bundle):
@@ -175,62 +188,116 @@ class UnityReader:
                     return data
         raise ValueError(f'{cardid} 没有可识别的 CardDef')
 
-    def walk(self, root, locale='zhcn', max_nodes=4000, errors=None, include_visual=False):
+    def walk(self, root, locale='zhcn', max_nodes=4000, errors=None, include_visual=False,
+             with_conditions=False, condition_match=None, with_timing=False):
         """遍历一个预制体的真实引用图，跳过脚本及父指针，避免走进其他预制体。
 
         返回 (对象, 类型树)。只遍历组件、子层级和资源引用；纹理/音频是叶节点。
         遇到缺失引用记录日志；调用方可把错误显示在界面，不用空数据冒充成功。
         """
-        queue = deque([root])
+        from .audio_timing import card_timing, fsm_audio_actions
+        queue = deque([(root, None, None)])
         seen = set()
         while queue:
-            obj = queue.popleft()
-            key = (obj.assets_file.name, obj.path_id)
+            obj, condition, timing = queue.popleft()
+            key = (obj.assets_file.name, obj.path_id, json.dumps(condition, sort_keys=True) if with_conditions else '',
+                   json.dumps(timing, sort_keys=True) if with_timing else '')
             if key in seen:
                 continue
             seen.add(key)
             if len(seen) > max_nodes:
                 raise ValueError(f'资源引用超过 {max_nodes} 个对象，未完成遍历')
             kind = obj.type.name
+            def output(tree):
+                if with_timing:
+                    return obj, tree, condition, timing
+                return (obj, tree, condition) if with_conditions else (obj, tree)
             if not include_visual and kind in ('ParticleSystem', 'ParticleSystemRenderer', 'MeshRenderer',
                                               'SkinnedMeshRenderer', 'MeshFilter', 'Animation', 'Animator', 'Light'):
                 continue
             if kind in ('MonoScript', 'Shader', 'Mesh', 'AnimationClip', 'Texture2D', 'AudioClip', 'Sprite', 'Material'):
-                yield obj, None
+                yield output(None)
                 continue
             tree = obj.read_typetree()
-            yield obj, tree
+            yield output(tree)
+            sound_spell = False
+            if not include_visual and kind == 'GameObject':
+                # CardSoundSpell 已明确指出默认和条件音源；其 Transform 子树只是
+                # 编辑器中容纳所有分支的层级，不能再无条件遍历一次。
+                for component in tree.get('m_Component', []):
+                    child = self.pointer(obj, component['component'])
+                    if child and child.type.name == 'MonoBehaviour' and 'm_CardSoundData' in child.read_typetree():
+                        sound_spell = True
+                        break
+            if not include_visual and kind == 'AudioSource':
+                # Unity AudioSource 本身常无 Clip，真正的本地化 GUID 在同宿主的
+                # SoundDef 组件。只进入该组件，绝不重新遍历宿主上的其他条件。
+                owner = self.pointer(obj, tree.get('m_GameObject', {}))
+                if owner:
+                    for component in owner.read_typetree().get('m_Component', []):
+                        child = self.pointer(owner, component['component'])
+                        if child and child.type.name == 'MonoBehaviour':
+                            data = child.read_typetree()
+                            if 'm_AudioClip' in data or 'm_RandomClips' in data:
+                                queue.append((child, condition, timing))
+            if with_timing and 'fsm' in tree:
+                # 先携带状态证据入队；后续普通引用遍历的同一声音不覆盖该证据。
+                for params, evidence in fsm_audio_actions(tree):
+                    for field in ('m_OneShotSound', 'm_OneShotClip'):
+                        if field in params:
+                            try:
+                                child = self.pointer(obj, params[field])
+                                if child:
+                                    queue.append((child, condition, evidence))
+                            except (KeyError, ValueError, FileNotFoundError) as exc:
+                                if errors is not None:
+                                    errors.append(str(exc))
             # 二维预览只消费粒子参数；材质纹理由 Service 定向读取。
             # 不追踪形状网格、碰撞、渲染器探针等不参与当前预览的引用。
             if include_visual and kind in ('ParticleSystem', 'ParticleSystemRenderer'):
                 continue
-            def visit(value, field=''):
-                if field in ('m_Script', 'm_Father', 'm_Shader'):
+            def visit(value, field='', branch=condition, clock=timing):
+                # 组件的宿主反向指针不是资源依赖。沿此指针返回 GameObject 会把
+                # 同级的其他条件音源、商店展示角色全部重新带入当前语音分支。
+                component_scene = kind == 'MonoBehaviour' and not any(k in tree for k in ('m_AudioClip', 'm_RandomClips', 'm_CardSoundData'))
+                if field in ('m_Script', 'm_Father', 'm_Shader') or (field == 'm_GameObject' and kind not in ('Transform', 'RectTransform') and not component_scene):
                     return
                 if not include_visual and field in ('m_Materials', 'm_Mesh', 'm_Texture'):
                     return
                 if isinstance(value, dict):
+                    if with_timing and 'm_AudioSource' in value and 'm_DelaySec' in value:
+                        clock = card_timing(value)
                     if 'm_PathID' in value:
                         if value['m_PathID']:
                             try:
                                 child = self.pointer(obj, value)
                                 if child:
-                                    queue.append(child)
+                                    if sound_spell and child.type.name in ('Transform', 'RectTransform'):
+                                        return
+                                    queue.append((child, branch, clock))
                             except (KeyError, ValueError, FileNotFoundError) as exc:
                                 if errors is not None:
                                     errors.append(str(exc))
                     else:
                         for k, v in value.items():
-                            visit(v, k)
+                            visit(v, k, branch, clock)
                 elif isinstance(value, (list, tuple)):
+                    if with_timing and field == 'm_RandomClips' and len(value) > 1:
+                        clock = {'resolved': False, 'anchor': 'random_selection',
+                                 'label': '客户端随机候选音轨；不能将互斥候选同时叠放'}
                     for v in value:
-                        visit(v, field)
+                        if field == 'm_CardSpecificVoDataList' and isinstance(v, dict):
+                            if condition_match is not None and not condition_match(v):
+                                continue
+                            visit(v, '', v, clock)
+                        else:
+                            visit(v, field, branch, clock)
                 elif isinstance(value, str) and guid(value):
                     if not include_visual and value.split(':')[0].lower().endswith(('.mat', '.psd', '.tif', '.tga', '.png', '.jpg', '.fbx', '.anim')):
                         return
                     try:
                         child, _, _ = self.resolve(value, locale)
-                        queue.append(child)
+                        queue.append((child, branch, clock))
                     except (KeyError, ValueError, FileNotFoundError) as exc:
                         if errors is not None:
                             errors.append(str(exc))

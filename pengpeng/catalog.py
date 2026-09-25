@@ -6,11 +6,35 @@
 import csv
 import re
 import json
+import html
 from collections import defaultdict
 from datetime import date
 from .releases import release_reference
+from .common import localized
 
-CATALOG_VERSION = 5
+CATALOG_VERSION = 8
+KEYWORD_VERSION = 1
+
+
+def has_immune_keyword(record):
+    """词条筛选表达卡面机制，包含授予/条件免疫，但排除隐藏无敌标签。
+
+    客户端 240 标签是运行时不可受伤状态：它既不会列出脚本在攻击期间
+    授予免疫的卡牌，也会命中剧情中不可摧毁的实体。这里只读取简体卡面
+    正文，不检索名称、趣味描述、衍生牌或另一语言的旧文本。
+    """
+    text = html.unescape(re.sub(r'<[^>]*>', '', localized(record, 'm_textInHand')))
+    return '免疫' in text
+
+
+def update_immune_keywords(store):
+    """轻量修复已有工作区；不重建卡牌关系，也不改变收藏和完整索引状态。"""
+    with store.db:
+        store.db.execute("DELETE FROM card_keywords WHERE keyword='免疫'")
+        store.db.executemany('INSERT OR IGNORE INTO card_keywords VALUES (?,?)',
+            [(row['id'], '免疫') for row in store.db.execute('SELECT id,data FROM cards')
+             if has_immune_keyword(json.loads(row['data']))])
+    store.set_meta('immune_keyword_version', KEYWORD_VERSION)
 
 CLASSES = {12: '通用英雄 / 中立', 1: '死亡骑士', 14: '恶魔猎手', 2: '德鲁伊',
            3: '猎人', 4: '法师', 5: '圣骑士', 6: '牧师', 7: '潜行者', 8: '萨满祭司',
@@ -29,8 +53,15 @@ def build_catalog(service):
     """一次读取标签、系列和皮肤关系，避免滚动图鉴时逐张读取 Unity CardDef。"""
     db = service.store.db
     env = service.reader.load('dbf.unity3d')
+    record_cache = {}
     def records(name):
-        return env.container[f'Assets/Game/DBF-Asset/{name}.asset'].read_typetree()['Records']
+        # CARD / HERO 等表在百科阶段还要读取，复用类型树，避免重复解码。
+        if name in record_cache:
+            return record_cache[name]
+        service.emit({'event': 'progress', 'message': '读取数据库表 · ' + name, 'done': 0, 'total': 0})
+        key = f'Assets/Game/DBF-Asset/{name}.asset'
+        record_cache[name] = env.container[key].read_typetree()['Records'] if key in env.container else []
+        return record_cache[name]
     tags, sets = defaultdict(dict), defaultdict(list)
     for r in records('CARD_TAG'):
         if not r.get('m_isReferenceTag'):
@@ -38,6 +69,7 @@ def build_catalog(service):
     for r in records('CARD_SET_TIMING'):
         sets[r['m_cardId']].append(r['m_cardSetId'])
     skins = {r['m_cardId'] for r in records('CARD_HERO')}
+    guides = {r['m_skinCardId'] for r in records('BATTLEGROUNDS_GUIDE_SKIN')}
     battlegrounds = set()
     for r in records('BATTLEGROUNDS_HERO_SKIN'):
         battlegrounds.update((r['m_skinCardId'], r['m_baseCardId']))
@@ -46,6 +78,11 @@ def build_catalog(service):
     if path.exists():
         with path.open(encoding='utf-8-sig') as stream:
             names = {r.get('TAG'): r.get('TEXT') for r in csv.DictReader(stream, delimiter='\t')}
+    keyword_tags = {}
+    for keyword in records('KEYWORD_TEXT'):
+        label = re.split(r'[：:（(]', names.get(keyword['m_name'], ''))[0].strip()
+        if label and keyword.get('m_tagId'):
+            keyword_tags[keyword['m_tagId']] = label
     set_records = {r['m_ID']: r for r in records('CARD_SET')}
     event_map = env.container['Assets/Game/DBF-Asset/EventMap.asset'].read_typetree()
     events = dict(zip(event_map['m_Values'], event_map['m_Keys']))
@@ -70,6 +107,10 @@ def build_catalog(service):
         CREATE TABLE IF NOT EXISTS card_sets (id TEXT, set_id INTEGER, PRIMARY KEY(id,set_id));
         CREATE INDEX IF NOT EXISTS filter_facets ON card_filters(card_type,class_id,cost);
         CREATE INDEX IF NOT EXISTS filter_sets ON card_sets(set_id,id);
+        CREATE TABLE IF NOT EXISTS card_tags(id TEXT,tag INTEGER,value INTEGER,PRIMARY KEY(id,tag));
+        CREATE INDEX IF NOT EXISTS tags_value ON card_tags(tag,value,id);
+        CREATE TABLE IF NOT EXISTS card_keywords(id TEXT,keyword TEXT,PRIMARY KEY(id,keyword));
+        CREATE INDEX IF NOT EXISTS keywords_name ON card_keywords(keyword,id);
     ''')
     with db:
         db.execute('DELETE FROM card_details')
@@ -90,22 +131,34 @@ def build_catalog(service):
         db.execute('DELETE FROM card_sets')
         db.execute('DELETE FROM card_classes')
         db.execute('DELETE FROM card_releases')
-        for r in card_records:
+        db.execute('DELETE FROM card_tags')
+        db.execute('DELETE FROM card_keywords')
+        for index, r in enumerate(card_records):
+            if index % 500 == 0:
+                service.emit({'event': 'progress', 'message': '建立筛选与属性索引', 'done': index, 'total': len(card_records)})
             cid, rid = r['m_noteMiniGuid'], r['m_ID']
             if not cid:
                 continue
             t = tags[rid]
+            db.executemany('INSERT INTO card_tags VALUES (?,?,?)', [(cid, k, v) for k, v in t.items()])
+            # KEYWORD_TEXT 把本地化名称映射到实际标签；引用其他卡牌的词条
+            # 不作为自身能力，也不会把加粗的数字、“你的”等误做筛选项。
+            keywords = {label for tag, label in keyword_tags.items() if t.get(tag)}
+            db.executemany('INSERT OR IGNORE INTO card_keywords VALUES (?,?)',
+                [(cid, word) for word in keywords if 1 < len(word) <= 12])
             # 新版客户端用独立标签表示多种族，兼容旧版主种族标签。
             races = {race['m_ID'] for race in race_tags if race['m_isRaceTagId'] and t.get(race['m_isRaceTagId'])}
             if t.get(200):
                 races.add(t[200])
             detail = {'attack': t.get(47), 'health': t.get(45), 'durability': t.get(187),
+                      'tier': t.get(1440), 'bg_pool': bool(t.get(1456)), 'bg_golden': bool(t.get(1471)),
                       'races': sorted(races), 'crafting_event': r.get('m_craftingEvent', -1),
                       'golden_crafting_event': r.get('m_goldenCraftingEvent', -1)}
             db.execute('INSERT INTO card_details VALUES (?,?)', (cid, json.dumps(detail)))
-            bg = rid in battlegrounds or cid.startswith(('TB_BaconShop_HERO_', 'BG_HERO_'))
-            hero = rid in skins or bg or (t.get(202) == 3 and not t.get(321))
-            group = str(t.get(199, 12)) if rid in skins or bg or cid.startswith('HERO_') else 'enemy'
+            bg_hero = rid in battlegrounds or cid.startswith(('TB_BaconShop_HERO_', 'BG_HERO_'))
+            bg = bg_hero or bool(t.get(1440) or t.get(1456)) or 1453 in sets[rid]
+            hero = rid in skins or rid in guides or bg_hero or (t.get(202) == 3 and not t.get(321))
+            group = 'npc' if rid in guides else (str(t.get(199, 12)) if rid in skins or bg or cid.startswith('HERO_') else 'enemy')
             # MULTIPLE_CLASSES 使用职业枚举减一作为位序，双职业不应归入中立。
             mask = t.get(476, 0)
             classes = [c for c in CLASSES if mask & (1 << (c - 1))] if mask else [t.get(199, 12)]
@@ -119,6 +172,11 @@ def build_catalog(service):
                  and not bg and not cardsets.issubset({1646,1586,1810})))
             db.executemany('INSERT OR IGNORE INTO card_sets VALUES (?,?)', [(cid, sid) for sid in cardsets])
             db.execute('UPDATE cards SET hero=? WHERE id=?', (hero, cid))
+            # 战棋普通/金色随从有明确的 DBF 互引，详情可直接跳到对照版本。
+            for tag in (1429, 1471, 1452):
+                target = identities.get(t.get(tag))
+                if target and target != cid:
+                    db.execute('INSERT OR IGNORE INTO card_relations VALUES (?,?)', (cid, target))
             release_date, source = release_reference(cid, cardsets, hero)
             db.execute('INSERT INTO card_releases VALUES (?,?,?)', (cid, release_date, source))
     labels = {sid: names.get('GLOBAL_CARD_SET_' + key) or key for sid, key in SET_KEYS.items()}
@@ -127,14 +185,30 @@ def build_catalog(service):
     service.store.set_meta('filter_sets', [{'value': str(sid), 'label': labels.get(sid, f'系列 {sid}')}
         for sid in sorted({r[0] for r in db.execute('SELECT DISTINCT set_id FROM card_sets')},
                           key=lambda sid: set_records.get(sid, {}).get('m_releaseOrder', 0), reverse=True)])
+    # 全局播报员并非可用卡牌，使用明确的工具内实体，不冒用某张卡牌的 DBF ID。
+    with db:
+        db.execute("INSERT OR REPLACE INTO cards VALUES ('NPC_INNKEEPER','旅店老板 · 全局播报','Innkeeper',1,'',?,NULL)",
+                   (json.dumps({'npc': 'innkeeper', 'hero_description': {'m_locValues': []}}),))
+        db.execute("INSERT OR REPLACE INTO card_filters VALUES ('NPC_INNKEEPER',12,0,0,3,0,0,'npc',0,0)")
+    from .encyclopedia import build_encyclopedia
+    build_encyclopedia(service, records, tags)
     service.store.set_meta('filters_version', CATALOG_VERSION)
     service.store.set_meta('rotation_year', year)
 
 
 def options(store):
+    from .card_details import RACES
     def pairs(mapping):
         return [{'value': str(k), 'label': v} for k, v in mapping.items()]
-    return {'sets': store.get_meta('filter_sets', []), 'classes': pairs(CLASSES),
+    sets = []
+    editions = store.get_meta('filter_editions', [])
+    for parent in store.get_meta('filter_sets', []):
+        sets.append(parent)
+        sets.extend({**e, 'label': '↳ ' + e['label']} for e in editions if e['parent'] == parent['value'])
+    sets.extend(e for e in editions if e['parent'] not in {s['value'] for s in sets})
+    return {'sets': sets, 'classes': pairs(CLASSES),
             'rarities': pairs(RARITIES), 'types': pairs(TYPES),
-            'formats': pairs({'standard': '标准（本地轮换参考）', 'wild': '狂野', 'bg': '酒馆战棋'}),
-            'hero_groups': pairs({**CLASSES, 'enemy': '敌人 / 冒险角色'})}
+            'formats': pairs({'standard': '标准（本地轮换参考）', 'wild': '狂野'}),
+            'races': pairs(RACES),
+            'keywords': [{'value': r[0], 'label': r[0]} for r in store.db.execute('SELECT DISTINCT keyword FROM card_keywords ORDER BY keyword')],
+            'hero_groups': pairs({**CLASSES, 'npc': '调酒师 / 全局播报', 'enemy': '敌人 / 冒险角色'})}

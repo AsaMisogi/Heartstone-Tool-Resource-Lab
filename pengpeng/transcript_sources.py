@@ -17,6 +17,8 @@ from urllib.error import HTTPError
 
 
 DEFAULT_SOURCES = [
+    {'id': 'ifindhs', 'name': '炉石传说 Wiki · ifindhs（首选）', 'kind': 'ifindhs', 'enabled': True,
+     'url': 'https://wiki.ifindhs.com/index.php?title={name}'},
     {'id': 'baidu', 'name': '百度百科（部分卡牌）', 'kind': 'baidu', 'enabled': True,
      'url': 'https://bkso.baidu.com/item/{name}'},
     {'id': 'huiji', 'name': '炉石中文维基（灰机）', 'kind': 'huiji', 'enabled': True, 'url': ''},
@@ -33,13 +35,14 @@ def migrate_sources(values):
     空列表表示全部停用，升级也不能悄悄开启联网。
     """
     present = {s['id'] for s in values}
-    additions = [dict(s) for s in DEFAULT_SOURCES if s['id'] in ('hsdata', 'wikigg') and s['id'] not in present]
+    additions = [dict(s) for s in DEFAULT_SOURCES if s['id'] in ('ifindhs', 'hsdata', 'wikigg') and s['id'] not in present]
     if not additions:
         return validate_sources(values)
     if not any(s.get('enabled') for s in values):
         additions = [{**s, 'enabled': False} for s in additions]
     ordered = [s for s in values if s['id'] != 'huiji'] + [s for s in values if s['id'] == 'huiji']
-    return validate_sources(ordered + additions)
+    return validate_sources([s for s in additions if s['id'] == 'ifindhs'] + ordered +
+                            [s for s in additions if s['id'] != 'ifindhs'])
 
 
 
@@ -226,6 +229,9 @@ def fetch_source(workspace, source, identity, *, force=False):
     离线使用。403/429 的短冷却只作用于该接口，不阻止后续来源。
     """
     from .transcripts import fetch_quotes, parse_html_quotes
+    if source['kind'] == 'ifindhs':
+        from .ifindhs import fetch
+        return fetch(workspace, identity, force)
     if source['kind'] == 'huiji':
         return fetch_quotes(workspace, identity['dbfid'], force=True) if force else fetch_quotes(workspace, identity['dbfid'])
     if source['kind'] == 'hsdata':

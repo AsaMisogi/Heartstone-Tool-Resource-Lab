@@ -21,6 +21,16 @@ for name in ('vosk-model-small-cn-0.22', 'vosk-model-small-en-us-0.15'):
 datas += [('pengpeng/models', 'pengpeng/models'), ('licenses/VOSK_MODELS_APACHE-2.0.txt', 'licenses')]
 binaries = []
 hiddenimports = []
+# QtWebView 的 Python 模块尚无专用 PyInstaller hook。显式携带官方 QML 插件
+# 和 WebView2 适配 DLL，不能依赖开发机的 Qt 插件搜索路径；系统 Runtime 不随包复制。
+import PySide6
+qt_root = Path(PySide6.__file__).parent
+datas += [(str(qt_root / 'qml/QtWebView'), 'PySide6/qml/QtWebView')]
+binaries += [
+    (str(qt_root / 'Qt6WebView.dll'), 'PySide6'),
+    (str(qt_root / 'Qt6WebViewQuick.dll'), 'PySide6'),
+    (str(qt_root / 'plugins/webview/qtwebview_webview2.dll'), 'PySide6/plugins/webview'),
+]
 for package in ('UnityPy', 'fmod_toolkit', 'pyfmodex', 'vosk'):
     package_data, package_binaries, package_imports = collect_all(package)
     datas += package_data

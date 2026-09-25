@@ -33,7 +33,7 @@ def test_disabled_sources_and_complete_stop(tmp_path):
         assert not transcripts.supplement(tmp_path, 1, [voice('Play')], providers=[])['items']
         fetch.assert_not_called()
         fetch.return_value = {'quotes': {'Play':'台词'}, 'source':'https://example.org', 'source_name':'A'}
-        transcripts.supplement(tmp_path, 1, [voice('Play')], providers=[{**sources.DEFAULT_SOURCES[0], 'enabled':False},sources.DEFAULT_SOURCES[1],custom()])
+        transcripts.supplement(tmp_path, 1, [voice('Play')], providers=[{**next(s for s in sources.DEFAULT_SOURCES if s['id'] == 'baidu'), 'enabled':False},next(s for s in sources.DEFAULT_SOURCES if s['id'] == 'huiji'),custom()])
         assert fetch.call_count == 1 and fetch.call_args.args[1]['id'] == 'huiji'
 
 
@@ -45,7 +45,7 @@ def test_bad_custom_url(url):
 
 def test_settings_restart_and_failed_save(tmp_path):
     service = Service(tmp_path)
-    configured = [custom(), {**sources.DEFAULT_SOURCES[0], 'enabled': False}, sources.DEFAULT_SOURCES[1]]
+    configured = [custom(), {**next(s for s in sources.DEFAULT_SOURCES if s['id'] == 'baidu'), 'enabled': False}, next(s for s in sources.DEFAULT_SOURCES if s['id'] == 'huiji')]
     service.save_settings(transcript_sources=configured, general_audio=True)
     before = service.settings_path.read_bytes()
     with pytest.raises(ValueError): service.save_settings(transcript_sources=[custom(url='file://bad')])

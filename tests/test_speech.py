@@ -24,7 +24,7 @@ def wav(tmp_path, seconds=0.1, name='test.wav'):
 def test_defaults_migrate_and_user_choice_survives(tmp_path):
     service = Service(tmp_path)
     assert [(s['id'], s['enabled']) for s in service.settings['transcript_sources']] == [
-        ('baidu', True), ('huiji', True), ('hsdata', False), ('wikigg', False)]
+        ('ifindhs', True), ('baidu', True), ('huiji', True), ('hsdata', False), ('wikigg', False)]
     chosen = list(reversed(service.settings['transcript_sources']))
     chosen[0]['enabled'] = True
     service.save_settings(transcript_sources=chosen, speech_recognition=False)

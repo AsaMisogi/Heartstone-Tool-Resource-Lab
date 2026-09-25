@@ -14,6 +14,11 @@ def main():
     for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md', 'requirements.lock'):
         shutil.copy2(root / name, output / name)
     shutil.copy2(root / 'docs' / 'PORTABLE_README.txt', output / '使用说明.txt')
+    # 将本次变更与数据来源说明随便携包提供，离线用户也能查看升级差异。
+    shutil.copy2(root / 'docs' / 'RELEASE_0_12.md', output / '更新说明.md')
+    shutil.copy2(root / 'docs' / 'ENCYCLOPEDIA.md', output / 'ENCYCLOPEDIA.md')
+    shutil.copy2(root / 'docs' / 'SCROLLING_AND_AUDIO.md', output / 'PERFORMANCE.md')
+    shutil.copy2(root / 'docs' / 'SCROLLING_AND_AUDIO.md', output / 'SCROLLING_AND_AUDIO.md')
     python_license = Path(sys.base_prefix) / 'LICENSE.txt'
     shutil.copy2(python_license, output / 'PYTHON_LICENSE.txt')
     version = tomllib.loads((root / 'pyproject.toml').read_text('utf-8'))['project']['version']

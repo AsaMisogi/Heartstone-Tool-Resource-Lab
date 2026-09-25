@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pengpeng-asogi"
-version = "0.4.0"
+version = "0.12.0"
 description = "砰砰解析台 · 炉石本地资源工作台"
 readme = "README.md"
 license = "MIT"

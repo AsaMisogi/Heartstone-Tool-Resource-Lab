@@ -213,7 +213,7 @@ def fetch_quotes(workspace, dbfid, *, force=False):
         raise
 
 
-def supplement(workspace, dbfid, items, locale='zhcn', providers=None, force=False):
+def supplement(workspace, dbfid, items, locale='zhcn', providers=None, force=False, progress=lambda message, done, total: None):
     """精确字幕可覆盖任意语音；Wiki 只匹配唯一基础事件，始终保留已有文字。
 
     force 是用户主动重试：绕过本轮涉及来源的缓存与短冷却，不删除成功缓存。
@@ -242,29 +242,39 @@ def supplement(workspace, dbfid, items, locale='zhcn', providers=None, force=Fal
                         'source_name': data['source_name'], 'stale': data.get('stale', False),
                         'match_method': method})
         missing.pop(item['id'], None)
-    for provider in providers:
+    for provider_index, provider in enumerate(providers):
+        progress('查询台词来源 · ' + provider['name'], provider_index, len(providers))
         if not missing:
             break
-        identities = [None] if provider['kind'] == 'hsdata' else list(dict.fromkeys(
-            key[0] for key, item in eligible.items() if item['id'] in missing))
+        if provider['kind'] == 'hsdata':
+            identities = [None]
+        elif provider['kind'] == 'ifindhs':
+            identities = list(dict.fromkeys(int(item.get('transcript_dbfid') or dbfid) for item in missing.values()))
+        else:
+            identities = list(dict.fromkeys(key[0] for key, item in eligible.items() if item['id'] in missing))
         count = 0
         stale = False
-        for source in identities:
+        for source_index, source in enumerate(identities):
+            progress(f"{provider['name']} · 查询卡牌", source_index, len(identities))
             remaining = {event: item for (identity, event), item in eligible.items()
                          if identity == source and item['id'] in missing}
             first = next(iter(remaining.values()), {})
+            if provider['kind'] == 'ifindhs':
+                first = next((item for item in missing.values() if int(item.get('transcript_dbfid') or dbfid) == source), {})
             identity = {'dbfid': source, 'cardid': first.get('transcript_cardid', ''),
                         'name': first.get('transcript_name', ''), 'locale': locale}
             try:
                 data = fetch_source(workspace, provider, identity, force=True) if force else fetch_source(workspace, provider, identity)
             except Exception as exc:
-                if provider['id'] == 'huiji':
+                if provider['id'] == 'ifindhs':
+                    sources.append('ifindhs:' + identity['cardid'] + ':' + identity['name'])
+                elif provider['id'] == 'huiji':
                     sources.append(source)
                 reason = '需要浏览器验证' if isinstance(exc, SourceBlocked) else (f'HTTP {exc.code}' if isinstance(exc, HTTPError) else type(exc).__name__)
                 notes.append(f"{provider['name']}：查询失败（{reason}），可重试")
                 continue
             stale |= data.get('stale', False)
-            if provider['kind'] == 'hsdata':
+            if provider['kind'] in ('hsdata', 'ifindhs'):
                 for item in list(missing.values()):
                     text = data['clips'].get(audio_key(item.get('name', '')))
                     if text:
@@ -282,4 +292,5 @@ def supplement(workspace, dbfid, items, locale='zhcn', providers=None, force=Fal
         note = '未启用台词来源，可在设置中勾选。'
     elif missing:
         note += '；其余片段暂无可准确对应的台词，可稍后重试。'
+    progress('台词查询完成', len(providers), len(providers))
     return {'items': results, 'note': note, 'sources': list(dict.fromkeys(sources))}

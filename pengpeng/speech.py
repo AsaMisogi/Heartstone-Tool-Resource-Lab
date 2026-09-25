@@ -223,11 +223,17 @@ class Recognizer:
                 self.locale = identity
             progress('正在离线识别，结果不保证准确…')
             started, parts = time.monotonic(), []
-            for path in files:
+            for file_index, path in enumerate(files):
                 with sf.SoundFile(path) as audio:
                     recognizer = KaldiRecognizer(self.model, audio.samplerate)
+                    processed, reported = 0, -1
                     # Vosk 内部完成抗混叠重采样；不用引入 ffmpeg / PyTorch / scipy。
                     for frames in audio.blocks(blocksize=4096, dtype='float32', always_2d=True):
+                        processed += len(frames)
+                        percent = int(processed * 10 / max(1, audio.frames))
+                        if percent != reported:
+                            reported = percent
+                            progress(f'离线识别 · 采样 {file_index + 1}/{len(files)} · 音频帧 {processed}/{audio.frames}')
                         mono = np.clip(frames.mean(axis=1), -1, 1)
                         pcm = (mono * 32767).astype('<i2').tobytes()
                         if recognizer.AcceptWaveform(pcm):

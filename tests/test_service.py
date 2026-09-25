@@ -88,7 +88,9 @@ def test_index_resume_and_changed_corrupt_bundle(tmp_path):
     def broken(_):
         raise ValueError('corrupt test bundle')
     s.reader.load = broken
-    list(s.scan())
+    with pytest.raises(ValueError, match='1 个资源包'):
+        list(s.scan())
+    assert not s.store.get_meta('last_scan')
     assert s.list_assets()['total'] == 0
     assert 'corrupt' in s.store.db.execute('SELECT error FROM bundles').fetchone()[0]
     s.reader.load = load
@@ -104,7 +106,7 @@ def test_partial_audio_graph_does_not_hold_database_lock(tmp_path):
         assets_file=SimpleNamespace(name='CAB-test'),
         read=lambda: SimpleNamespace(m_Name='VO_Test', m_Length=1))
     def walk(*args, **kwargs):
-        yield obj, None
+        yield obj, None, None, None
         assert not s.store.db.in_transaction, 'Unity 遍历期间不应占用 SQLite 写锁'
         raise ValueError('资源引用超过节点上限，未完成遍历')
     s.reader = SimpleNamespace(walk=walk, cabs={'cab-test': 'test.unity3d'})

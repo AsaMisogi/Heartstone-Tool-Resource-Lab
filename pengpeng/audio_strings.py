@@ -20,7 +20,9 @@ def parse_audio_strings(text):
     for row in rows:
         key = audio_key(row.get('TAG') or '')
         value = (row.get('TEXT') or '').replace('\x00', '').strip()
-        if not key or key.startswith('#') or not value:
+        # 客户端以 <_死亡_> 等标记尚未填写的台词；它不是可朗读字幕。
+        # 留空才能继续尝试网站精确匹配，不能让占位符抢占本地字幕优先级。
+        if not key or key.startswith('#') or not value or re.fullmatch(r'<_.*_>', value):
             continue
         tags[key] = value
         for alias in re.findall(r'([\w-]+)\.(?:wav|ogg|mp3)', row.get('COMMENT') or '', re.I):

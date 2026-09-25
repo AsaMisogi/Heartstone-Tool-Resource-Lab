@@ -68,23 +68,31 @@ def executable_version(path: Path) -> str:
         return ''
 
 
-def audio_category(name: str, bundle: str) -> str:
-    """可解释的命名分类；没有匹配时保留“其他”，不猜测具体角色。"""
-    # 分类以片段名为准。语音包也包含音乐、撞击和环境声，不能因包名
-    # 含 soundotherminion/playsound 就把其中每个 AudioClip 标为角色语音。
-    clip = name.lower()
-    value = (name + ' ' + bundle).lower()
+def audio_category(name: str, bundle: str, duration: float = 0) -> str:
+    """先看片段用途，再以专用音乐包和时长补充；不让包名覆盖音效证据。
+
+    时长仅在已确认音乐来源后用于区分短曲，绝不单凭时长把环境循环算作音乐。
+    保留四个用户可理解的大类，具体场景由 audio_library 的子分组表达。
+    """
+    from .music_titles import BACKGROUND_TITLES
+    clip, package = name.lower().strip(), bundle.lower()
     if re.search(r'(?:^|[_\-])(?:vo|voice|dialog)[_\-]', clip):
         return '角色语音'
-    if any(x in value for x in ('music', 'stinger', 'mus_')):
-        return '音乐 / 登场曲'
-    if any(x in value for x in ('ui_', 'button', 'menu', 'collection', 'packopen')):
-        return '界面 / 交互'
-    if any(x in value for x in ('ambient', 'amb_', 'board', 'tavern')):
-        return '环境 / 棋盘'
-    if any(x in value for x in ('spell', 'attack', 'impact', 'death', 'damage', 'sfx', 'playsound')):
-        return '战斗 / 法术'
-    return '其他音效'
+    if 'stinger' in clip or re.search(r'(?:^|[_ ])(?:jingle|sting)(?:[_ ]|$)', clip):
+        return '短音乐 / 登场曲'
+    # 动作/环境证据先于包名。MusicBox 等道具、音乐主题系列的施法音效
+    # 以及音乐包夹带的交互音，不应因名字中含 music 而成为背景音乐。
+    effect = re.search(r'(?:^|[_ ])(?:sfx|fx|amb|ambient|ambience|wallah|impact|attack|'
+                       r'death|damage|click|button|poke|cast|precast|fizzle|sound)(?:[_ ]|$)', clip)
+    if effect:
+        return '音效'
+    music = (clip in BACKGROUND_TITLES or clip.startswith('heromusic_')
+             or re.search(r'(?:^|[_ ])(?:music|mus)(?:[_ ]|$)', clip)
+             or package.startswith(('musicexpansion_', 'heromusic_')) and duration >= 30)
+    if music:
+        # 前奏/尾奏、胜负提示和登场乐属于短音乐，不将所有英雄曲一概当短曲。
+        return '短音乐 / 登场曲' if 0 < duration < 30 else '背景音乐'
+    return '音效'
 
 
 def bundle_locale(bundle: str) -> str:

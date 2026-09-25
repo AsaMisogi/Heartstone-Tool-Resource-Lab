@@ -22,8 +22,11 @@ class Store:
                 name TEXT, kind TEXT, category TEXT, locale TEXT, duration REAL);
             CREATE INDEX IF NOT EXISTS asset_kind ON assets(kind, locale, category);
             CREATE INDEX IF NOT EXISTS asset_bundle ON assets(bundle);
+            CREATE TABLE IF NOT EXISTS audio_labels (id TEXT PRIMARY KEY, subgroup TEXT, annotation TEXT);
+            CREATE INDEX IF NOT EXISTS audio_subgroup ON audio_labels(subgroup);
             CREATE TABLE IF NOT EXISTS bundles (name TEXT PRIMARY KEY, stamp TEXT, error TEXT);
             CREATE TABLE IF NOT EXISTS favorites (kind TEXT, id TEXT, PRIMARY KEY(kind,id));
+            CREATE TABLE IF NOT EXISTS new_content (kind TEXT,id TEXT,PRIMARY KEY(kind,id));
             CREATE TABLE IF NOT EXISTS cabs (name TEXT PRIMARY KEY, bundle TEXT);
             CREATE INDEX IF NOT EXISTS card_scope ON cards(hero,id);
             CREATE INDEX IF NOT EXISTS card_default_order ON cards(

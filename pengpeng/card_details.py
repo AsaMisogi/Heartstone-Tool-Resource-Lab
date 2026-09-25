@@ -37,6 +37,7 @@ def catalog_summaries(store, cardids):
             'health': raw.get('health'), 'durability': raw.get('durability'),
             'races': [RACES.get(r, f'种族 {r}') for r in raw.get('races', [])],
             'classes': [], 'sets': [], 'battlegrounds': bool(row['bg']),
+            'tier': raw.get('tier'), 'bg_pool': raw.get('bg_pool'), 'bg_golden': raw.get('bg_golden'),
         }
     for row in store.db.execute(
             f'SELECT id,class_id FROM card_classes WHERE id IN ({marks}) ORDER BY class_id', cardids):
@@ -72,6 +73,8 @@ def card_metadata(store, cardid, locale):
     golden = not unavailable and (normal if raw['golden_crafting_event'] == -1
                                  else raw['golden_crafting_event'] not in (0, 164))
     metadata = {'rarity': RARITIES.get(rarity, '未标注'), 'type': TYPES.get(facet['card_type'], '其他'),
+                'battlegrounds': bool(facet['bg']), 'tier': raw.get('tier'),
+                'bg_pool': raw.get('bg_pool'), 'bg_golden': raw.get('bg_golden'),
                 'cost': facet['cost'], 'attack': raw['attack'], 'health': raw['health'],
                 'durability': raw['durability'],
                 'races': [RACES.get(r, f'种族 {r}') for r in raw['races']],
@@ -81,10 +84,20 @@ def card_metadata(store, cardid, locale):
                 'dust': {'normal': list(dust[:2]) if normal else None,
                          'golden': list(dust[2:]) if golden else None},
                 'dust_note': '常规奥术之尘参考（打造 / 分解）；活动、获取方式和账号限制以游戏为准。'}
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='card_editions'").fetchone():
+        editions = {e['value']: e['label'] for e in store.get_meta('filter_editions', [])}
+        metadata['editions'] = [editions[r[0]] for r in db.execute('SELECT edition FROM card_editions WHERE id=?', (cardid,))
+                                if r[0] in editions]
     # 同时显示来源牌，衍生牌可以自然回溯；UNION 消除双向记录的重复项。
-    related = db.execute('''SELECT c.id,c.name,c.data FROM cards c JOIN (
+    related = db.execute('''SELECT c.id,c.name,c.data,d.data AS details FROM cards c LEFT JOIN card_details d ON d.id=c.id JOIN (
         SELECT related AS id FROM card_relations WHERE id=?
         UNION SELECT id FROM card_relations WHERE related=?
         ) r ON c.id=r.id ORDER BY c.id''', (cardid, cardid)).fetchall()
-    return metadata, [{'id': r['id'], 'name': localized(json.loads(r['data']), 'm_name', locale) or r['name']}
-                      for r in related]
+    result = []
+    for r in related:
+        item = {'id': r['id'], 'name': localized(json.loads(r['data']), 'm_name', locale) or r['name']}
+        detail = json.loads(r['details']) if r['details'] else {}
+        if detail.get('tier'):
+            item['variant'] = '金色随从' if detail.get('bg_golden') else '普通随从'
+        result.append(item)
+    return metadata, result

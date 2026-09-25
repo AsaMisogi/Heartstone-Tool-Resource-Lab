@@ -25,6 +25,15 @@ if __name__ == '__main__':
     phase = 0
     deadline = time.monotonic() + 120
     results = []
+    progress_captured = False
+
+    def capture_progress(text):
+        """欢迎模态框必须展示建库阶段，不能只在被遮挡的主窗口显示。"""
+        global progress_captured
+        if text and not progress_captured:
+            progress_captured = True
+            window.grab().save(str(output / 'welcome-progress.png'))
+            results.append({'visible_initialization_progress': text})
 
     def finish(error=None):
         timer.stop()
@@ -44,6 +53,9 @@ if __name__ == '__main__':
             phase = 1
             window.page.runJavaScript("document.querySelector('#welcome-path').value='F:/Games/Hearthstone';document.querySelector('#welcome-connect').click()")
         elif phase == 1 and value:
+            if not progress_captured:
+                finish('首次建库时欢迎窗口没有可见阶段进度')
+                return
             window.grab().save(str(output / 'index-guide.png'))
             results.append({'connected_with_index_guide': True})
             phase = 3
@@ -64,6 +76,7 @@ if __name__ == '__main__':
             return
         expression = "!!document.querySelector('#welcome')?.open" if phase == 0 else "!!window.pengpeng?.state.status?.ready && !document.querySelector('#welcome').open"
         if phase == 1:
+            window.page.runJavaScript("document.querySelector('#welcome').open && !document.querySelector('#welcome-progress').hidden ? document.querySelector('#welcome-progress').textContent : ''", capture_progress)
             expression += " && document.querySelector('#index-guide').open"
         elif phase in (2, 3):
             expression += " && !document.querySelector('#index-guide').open && window.pengpeng.state.status.settings.index_guide_seen"

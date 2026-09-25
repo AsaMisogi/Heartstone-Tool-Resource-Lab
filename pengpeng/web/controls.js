@@ -39,16 +39,17 @@ const SelectUI = (() => {
       row.type = "button";
       row.role = "option";
       row.textContent = option.textContent;
+      if (option.dataset.kind) row.dataset.kind = option.dataset.kind;
       row.disabled = option.disabled;
       row.setAttribute("aria-selected", String(i === index));
       row.onclick = () => choose(i);
       popup.append(row);
     });
     document.body.append(popup);
-    const r = button.getBoundingClientRect();
-    popup.style.width = `${Math.min(Math.max(r.width, 210), innerWidth - 24)}px`;
-    popup.style.left = `${Math.max(12, Math.min(r.left, innerWidth - popup.offsetWidth - 12))}px`;
-    const below = innerHeight - r.bottom - 12;
+    const r = logicalViewport(button.getBoundingClientRect());
+    popup.style.width = `${Math.min(Math.max(r.width, select.dataset.filter === 'set' ? 320 : 210), r.viewportWidth - 24)}px`;
+    popup.style.left = `${Math.max(12, Math.min(r.left, r.viewportWidth - popup.offsetWidth - 12))}px`;
+    const below = r.viewportHeight - r.bottom - 12;
     const height = Math.min(320, Math.max(below, r.top - 12));
     popup.style.maxHeight = `${height}px`;
     popup.style.top = `${below >= Math.min(popup.scrollHeight, 240) ? r.bottom + 6 : Math.max(12, r.top - Math.min(popup.scrollHeight, height) - 6)}px`;
@@ -110,3 +111,17 @@ const SelectUI = (() => {
   }).observe(document.body, {childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "disabled"]});
   return {refresh, close};
 })();
+
+// 事件委托覆盖动态按钮与键盘 click；单个短反馈动画结束即释放，不留下定时器。
+// 使用外轮廓闪亮而非覆盖按钮背景，保持选中态、危险操作等原有语义颜色。
+const clickFeedback = new WeakMap();
+document.addEventListener("click", e => {
+  const button = e.target.closest("button");
+  if (!button || button.disabled || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  // 标签靠单一选中态表达位置，不叠加离开后仍亮着的点击光圈。
+  if (button.matches('[data-tab],[data-voice-kind],[data-voice-group],[data-variant],.nav')) return;
+  clickFeedback.get(button)?.cancel();
+  clickFeedback.set(button, button.animate([
+    {boxShadow:"0 0 0 2px #f0c89188"}, {boxShadow:"0 0 0 5px #f0c89100"}
+  ], {duration:260, easing:"ease-out"}));
+}, true);

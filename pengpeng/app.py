@@ -1,4 +1,4 @@
-"""桌面宿主：本地 HTML + Qt WebChannel，不开放 HTTP 端口。
+"""桌面宿主：Windows 原生 WebView2，保留 Qt WebEngine 兼容路径。
 
 Qt 窗口拥有解析子进程的生命周期；退出先正常通知，再在超时后终止卡住的
 原生解码器。Windows Job Object 确保关闭调试控制台时也不会留下解析进程。
@@ -16,8 +16,8 @@ import re
 import sys
 import time
 
-from PySide6.QtCore import QObject, Signal, Slot, QTimer, QUrl, Qt, QLockFile
-from PySide6.QtGui import QDesktopServices, QIcon
+from PySide6.QtCore import QObject, Signal, Slot, QTimer, QUrl, Qt, QLockFile, QPoint
+from PySide6.QtGui import QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
@@ -26,6 +26,11 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from .worker import worker_main, effect_worker_main
 from .transcript_browser import TranscriptBrowser
 from .speech_process import SpeechProcess
+from .native_view import NativeView, initialize_native_view
+
+# Qt 要求在 QApplication 之前选择原生 WebView 插件。显式兼容模式仅用于
+# 无 WebView2 Runtime 的机器及开发回归；正常 Windows 窗口走系统浏览器链路。
+NATIVE_BROWSER = os.environ.get('PENGPENG_RENDERER') != 'qt' and initialize_native_view()
 
 
 def own_process_tree():
@@ -77,6 +82,11 @@ class Page(QWebEnginePage):
 class Bridge(QObject):
     response = Signal(str)
 
+    @Slot(bool)
+    def setSmoothScrolling(self, enabled):
+        """只切换页面的单一动画控制器，系统减少动画时直接定位。"""
+        self.window.page.runJavaScript('WheelScroll.setReduced(' + ('false' if enabled else 'true') + ');')
+
     @Slot(float)
     def setInterfaceScale(self, scale):
         """Qt 原生页面缩放同步布局、固定定位与鼠标坐标，避免 CSS transform 偏移。"""
@@ -120,7 +130,8 @@ class Bridge(QObject):
                     self.transcript_dialog = None
                     self.response.emit(json.dumps({'id': data['id'], 'result': result}))
                 self.transcript_dialog = TranscriptBrowser(self.window, self.workspace,
-                    data['params']['dbfid'], completed)
+                    data['params']['dbfid'], completed, cardid=params.get('cardid', ''),
+                    name=params.get('name', ''), source=params.get('source', 'huiji'))
                 self.transcript_dialog.show()
                 return
             if data.get('method') == 'cancel_effect':
@@ -202,6 +213,8 @@ class Bridge(QObject):
         if not self.worker.is_alive() and not self.dead_reported:
             self.dead_reported = True
             self.response.emit(json.dumps({'event': 'worker_dead', 'message': '解析进程意外停止。请查看日志并重新启动。'}))
+        if self.window.native_browser:
+            self.window.web.exchange(self)
 
 
 class Window(QMainWindow):
@@ -216,6 +229,16 @@ class Window(QMainWindow):
         self.worker = context.Process(target=worker_main, args=(self.inbox, self.outbox, str(workspace)), daemon=True)
         self.worker.start()
         print(f'桌面 PID={os.getpid()}，解析 PID={self.worker.pid}', flush=True)
+        self.native_browser = NATIVE_BROWSER
+        if self.native_browser:
+            self.web = NativeView(self, workspace)
+            self.page = self.web
+            self.bridge = Bridge(self, self.inbox, self.outbox, self.worker, workspace)
+            self.bridge.response.connect(self.web.queue_response)
+            self.setCentralWidget(self.web.widget)
+            self.web.load()
+            print('界面引擎：Windows WebView2 · 原生输入与显示同步', flush=True)
+            return
         self.web = QWebEngineView(self)
         self.web.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self.page = Page(self.web)
@@ -223,16 +246,37 @@ class Window(QMainWindow):
         self.page.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, False)
         self.page.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
         self.page.settings().setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
+        # Qt 的滚轮转换缓存系统行数，且与 Chromium Windows 的行距不同。
+        # 在输入边界转换一次；页面只有一条显示帧动画，不再叠加浏览器惯性。
+        self.page.settings().setAttribute(QWebEngineSettings.WebAttribute.ScrollAnimatorEnabled, False)
+        from .scrolling import WheelInput
+        self.wheel_input = WheelInput(self.web)
         self.channel = QWebChannel(self.page)
         self.bridge = Bridge(self, self.inbox, self.outbox, self.worker, workspace)
         self.channel.registerObject('host', self.bridge)
         self.page.setWebChannel(self.channel)
         self.setCentralWidget(self.web)
         self.web.load(QUrl.fromLocalFile(str(Path(__file__).parent / 'web/index.html')))
+        print('界面引擎：Qt WebEngine 兼容模式', flush=True)
+
+    def grab(self, *args):
+        # 原生 WebView2 是子 HWND，QWidget 离屏 grab 不包含其画面。
+        if self.native_browser:
+            # 开发截图不能把切换到前台的其他软件误当成工作台画面。
+            if not self.isActiveWindow():
+                return QPixmap()
+            origin = self.mapToGlobal(QPoint(0, 0))
+            return self.screen().grabWindow(0, origin.x(), origin.y(), self.width(), self.height())
+        return super().grab(*args)
 
     def closeEvent(self, event):
         print('正在关闭界面及解析进程…', flush=True)
         self.bridge.timer.stop()
+        if self.native_browser:
+            # 关闭后不再派发已在途的页面请求，避免回调触碰已关闭的解析队列。
+            self.web.ready = False
+            self.web.callbacks.clear()
+            self.web.outgoing.clear()
         if getattr(self.bridge, 'transcript_dialog', None) is not None:
             self.bridge.transcript_dialog.reject()
         self.bridge.stop_effect()

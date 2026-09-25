@@ -24,7 +24,7 @@ def test_guid_reference_does_not_capture_text():
 
 def test_audio_categories_and_locales():
     assert audio_category('VO_HERO_01_ATTACK', 'essential') == '角色语音'
-    assert audio_category('amb_forest', '') == '环境 / 棋盘'
-    assert audio_category('something_unknown', '') == '其他音效'
+    assert audio_category('amb_forest', '') == '音效'
+    assert audio_category('something_unknown', '') == '音效'
     assert bundle_locale('essential_base_zhcn-content-0.unity3d') == 'zhcn'
     assert bundle_locale('music_global-audio-0.unity3d') == 'global'

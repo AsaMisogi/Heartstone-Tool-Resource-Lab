@@ -1,7 +1,7 @@
 """台词站点拒绝自动请求时，提供正常浏览器验证与读取入口。
 
 远程页面使用独立 Profile，没有 WebChannel、文件访问或本地 API 权限。
-用户完成站点验证后，仍按数字 ID 请求同源 API，不读取剪贴板或其他浏览器
+用户完成站点验证后，核对页面卡牌代码或按数字 ID 请求同源 API，不读取剪贴板或其他浏览器
 Cookie，也不将远程 HTML 放入本地工作台。会话只保存在工作区自己的目录。
 """
 import json
@@ -18,13 +18,14 @@ from .transcripts import SOURCE, cache_quotes, parse_html_quotes
 class WikiPage(QWebEnginePage):
     def acceptNavigationRequest(self, url, navigation_type, is_main_frame):
         # 允许验证服务自己的子框架；顶层固定为台词来源，禁用任意外站跳转。
-        return not is_main_frame or (url.scheme() == 'https' and url.host() == 'hearthstone.huijiwiki.com')
+        return not is_main_frame or (url.scheme() == 'https' and url.host() == getattr(self, 'allowed_host', 'hearthstone.huijiwiki.com'))
 
 
 class TranscriptBrowser(QDialog):
-    def __init__(self, parent, workspace, dbfid, completed):
+    def __init__(self, parent, workspace, dbfid, completed, cardid='', name='', source='huiji'):
         super().__init__(parent)
         self.workspace, self.dbfid, self.completed = workspace, int(dbfid), completed
+        self.source, self.cardid, self.card_name = source, cardid, name
         if self.dbfid <= 0:
             raise ValueError('无效卡牌编号')
         self.setWindowTitle('公开台词 · 浏览验证与读取')
@@ -41,6 +42,7 @@ class TranscriptBrowser(QDialog):
             profile.setCachePath(str(workspace / 'cache' / 'transcript-browser' / 'http'))
             parent.transcript_profile = profile
         self.page = WikiPage(parent.transcript_profile, self.view)
+        self.page.allowed_host = 'wiki.ifindhs.com' if source == 'ifindhs' else 'hearthstone.huijiwiki.com'
         self.page.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, False)
         self.page.settings().setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, True)
         self.view.setPage(self.page)
@@ -52,15 +54,29 @@ class TranscriptBrowser(QDialog):
         close.clicked.connect(self.reject)
         row.addWidget(self.read)
         row.addWidget(close)
+        if source == 'ifindhs':
+            from .ifindhs import page_url
+            original = QPushButton('按原名称打开')
+            original.clicked.connect(lambda: self.view.load(QUrl(page_url(name))))
+            row.addWidget(original)
         layout.addLayout(row)
         self.poll = QTimer(self)
         self.poll.setInterval(250)
         self.poll.timeout.connect(self.poll_result)
         self.ticks = 0
         self.finished.connect(self.finish)
-        self.view.load(QUrl(SOURCE + f'/wiki/Card/{self.dbfid}'))
+        if source == 'ifindhs':
+            self.view.load(QUrl(page_url(name + ('（英雄）' if cardid.startswith('HERO_') else ''))))
+        else:
+            self.view.load(QUrl(SOURCE + f'/wiki/Card/{self.dbfid}'))
 
     def read_quotes(self):
+        if self.source == 'ifindhs':
+            if self.page.url().host() != 'wiki.ifindhs.com':
+                return
+            self.read.setEnabled(False)
+            self.page.toHtml(self.read_ifindhs)
+            return
         if self.page.url().host() != 'hearthstone.huijiwiki.com':
             return
         self.read.setEnabled(False)
@@ -73,6 +89,20 @@ class TranscriptBrowser(QDialog):
           const html = document.querySelector('#mw-content-text .mw-parser-output')?.outerHTML || '';
           return html.length <= 1000000 ? html : '';
         })()''', self.read_rendered)
+
+    def read_ifindhs(self, html):
+        """浏览器只提供正文；身份核对与缓存仍使用同一 Python 解析器。"""
+        if self.completed is None:
+            return
+        from .ifindhs import save_page
+        try:
+            if len(html) > 2_000_000:
+                raise ValueError('页面超过 2 MB')
+            save_page(self.workspace, self.cardid, html, self.page.url().toString())
+            self.accept()
+        except (ValueError, OSError) as exc:
+            self.message.setText(str(exc))
+            self.read.setEnabled(True)
 
     def read_rendered(self, html):
         if self.completed is None:

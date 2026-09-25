@@ -24,8 +24,8 @@ def test_settings_migrate_once_preserve_disabled_and_order(tmp_path):
     old = [{**provider('huiji'), 'enabled': False}, provider('baidu')]
     (tmp_path / 'settings.json').write_text(json.dumps({'transcript_sources': old}))
     service = Service(tmp_path)
-    assert [s['id'] for s in service.settings['transcript_sources']] == ['baidu', 'huiji', 'hsdata', 'wikigg']
-    assert not service.settings['transcript_sources'][1]['enabled']
+    assert [s['id'] for s in service.settings['transcript_sources']] == ['ifindhs', 'baidu', 'huiji', 'hsdata', 'wikigg']
+    assert not next(s for s in service.settings['transcript_sources'] if s['id'] == 'huiji')['enabled']
     assert not any(s['enabled'] for s in service.settings['transcript_sources'][-2:])
     chosen = list(reversed(service.settings['transcript_sources']))
     service.save_settings(transcript_sources=chosen)
@@ -38,6 +38,7 @@ def test_tsv_explicit_keys_and_ambiguous_aliases():
     result = parse_audio_strings(text)
     assert 'VO_TEST_PLAY_01' not in result
     assert result['VO_TEST_PLAY_02'] == '精确分支'
+    assert parse_audio_strings('TAG\tTEXT\nVO_TEST_DEATH\t<_死亡_>\n') == {}
     with pytest.raises(ValueError):
         parse_audio_strings('<html>challenge</html>')
 
@@ -91,8 +92,8 @@ def test_hsdata_shared_cache_retry_and_local_text_preserved(tmp_path):
 def test_retry_passes_force_to_all_enabled_sources(tmp_path):
     with patch.object(sources, 'fetch_source', side_effect=OSError('offline')) as fetch:
         transcripts.supplement(tmp_path, 1, [voice()], force=True)
-        assert fetch.call_count == 2
-        assert [c.args[1]['id'] for c in fetch.call_args_list] == ['baidu', 'huiji']
+        assert fetch.call_count == 3
+        assert [c.args[1]['id'] for c in fetch.call_args_list] == ['ifindhs', 'baidu', 'huiji']
         assert all(call.kwargs == {'force': True} for call in fetch.call_args_list)
 
 

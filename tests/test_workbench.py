@@ -74,7 +74,8 @@ def test_filters_combine_zero_cost_dual_class_and_hero_group(tmp_path):
     for cls in ('4', '7'):
         result = service.list_cards(filters={'cost': '0', 'class': cls, 'type': '5', 'set': '1001'})
         assert [x['id'] for x in result['items']] == ['ZERO']
-    assert service.list_cards(filters={'cost': '10+'})['items'][0]['id'] == 'TEN'
+    assert not service.list_cards(filters={'cost': '10+'})['items']
+    assert service.list_cards(battlegrounds=True, filters={'cost': '10+'})['items'][0]['id'] == 'TEN'
     assert service.list_cards(hero=True, filters={'hero_group': 'enemy', 'battlegrounds': 'exclude'})['total'] == 1
     assert service.list_cards(filters={'rarity': "3' OR 1=1"})['total'] == 0
     service.store.close()
