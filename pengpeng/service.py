@@ -22,6 +22,7 @@ import soundfile as sf
 
 from .common import (LOCALES, LOCALE_NAMES, audio_category, bundle_locale,
                      executable_version, fingerprint, guid, localized, references, safe_name)
+from . import __version__
 from .storage import Store
 from .catalog import CATALOG_VERSION, build_catalog, options as catalog_options
 from datetime import date
@@ -64,11 +65,11 @@ class Service:
         self.root = None
         self.cache = None
         self.settings_path = self.workspace / 'settings.json'
-        self.settings = {'game_path': '', 'locale': 'zhcn', 'paired_audio': False, 'general_audio': False, 'scroll_mode': 'smooth', 'infinite_scroll': False, 'page_size': 24, 'online_transcripts': True, 'transcript_sources': [dict(s) for s in DEFAULT_SOURCES],
+        self.settings = {'game_path': '', 'locale': 'zhcn', 'voice_locale': 'zhcn', 'sync_voice_locale': True, 'show_other_voice_locales': False, 'paired_audio': False, 'general_audio': False, 'scroll_mode': 'smooth', 'infinite_scroll': False, 'page_size': 24, 'online_transcripts': True, 'transcript_sources': [dict(s) for s in DEFAULT_SOURCES],
                          'speech_config': dict(DEFAULT_CONFIG), 'speech_api_key': '',
                          'speech_recognition': True, 'source_defaults_version': 0, 'index_guide_seen': False,
                          'mix_voice_export': False, 'view_state': {}, 'ui_scale': 1.0, 'font_scale': 1.0,
-                         'auto_check_updates': True, 'voice_page_size': 24,
+                         'auto_check_updates': True, 'voice_page_size': 24, 'detail_width': 610,
                          'catalog_density_version': 0, 'export_path': str(self.workspace / 'exports')}
         if self.settings_path.exists():
             try:
@@ -90,6 +91,7 @@ class Service:
                 {**s, 'enabled': False} for identity in tail for s in sources if s['id'] == identity]
             self.settings['source_defaults_version'] = 1
             self.save_settings()
+        self.string_warnings = []
         self.strings = {}
         self.audio_relations = OrderedDict()
         self.card_voices = OrderedDict()
@@ -99,6 +101,14 @@ class Service:
         self.voice_cache_stamp = {}
 
     def save_settings(self, **values):
+        for key in ('locale', 'voice_locale'):
+            if key in values and values[key] not in LOCALES:
+                raise ValueError('请选择支持的语言')
+        for key in ('sync_voice_locale', 'show_other_voice_locales'):
+            if key in values and type(values[key]) is not bool:
+                raise ValueError('语言选项必须为开关值')
+        if 'detail_width' in values and (type(values['detail_width']) is not int or not 360 <= values['detail_width'] <= 2400):
+            raise ValueError('详情宽度须为 360 至 2400 像素的整数')
         if 'scroll_mode' in values and values['scroll_mode'] not in ('smooth', 'instant'):
             raise ValueError('滚动方式必须为轻量平滑或即时滚动')
         if 'auto_check_updates' in values and type(values['auto_check_updates']) is not bool:
@@ -137,6 +147,16 @@ class Service:
         return self.settings
 
     def initialize(self, game_path=None, effect_only=False):
+        """初始化失败时释放半成品连接，避免扫描意外将其标记为已就绪。"""
+        try:
+            return self._initialize(game_path, effect_only)
+        except Exception:
+            if self.store:
+                self.store.close()
+            self.store = self.reader = None
+            raise
+
+    def _initialize(self, game_path=None, effect_only=False):
         from .game_updates import probe, analyze
         update = probe(self.workspace, game_path or self.settings['game_path']) if not effect_only else None
         def progress(message, done=0, total=0):
@@ -242,6 +262,7 @@ class Service:
 
     def _load_strings(self):
         self.strings.clear()
+        self.string_warnings = []
         for index, locale in enumerate(LOCALES):
             self.emit({'event': 'progress', 'message': '读取客户端字幕 · ' + locale, 'done': index, 'total': len(LOCALES)})
             folder = self.root / 'Strings' / (locale[:2] + locale[2:].upper())
@@ -252,7 +273,14 @@ class Service:
                     continue
                 # 与 hsdata 使用同一 TSV 规则，避免两条路径产生不同字幕键。
                 from .audio_strings import parse_audio_strings
-                values.update(parse_audio_strings(path.read_text(encoding='utf-8-sig')))
+                # 字幕是可选补充：单个文本损坏不应阻断图鉴、音频和其他语言。
+                # 严格解析器仍会拒绝错误格式；这里记录具体文件并向界面报告。
+                try:
+                    values.update(parse_audio_strings(path.read_text(encoding='utf-8-sig')))
+                except (ValueError, OSError) as exc:
+                    message = f'{locale}/{path.name}：{exc}'
+                    self.string_warnings.append(message)
+                    log.warning('跳过客户端字符串文件 %s', message)
             if values:
                 self.strings[locale] = values
 
@@ -322,11 +350,12 @@ class Service:
 
     def status(self):
         if not self.store:
-            return {'ready': False, 'settings': self.settings}
+            return {'ready': False, 'settings': self.settings, 'app_version': __version__}
         db = self.store.db
         counts = {r[0]: r[1] for r in db.execute('SELECT kind,COUNT(*) FROM assets GROUP BY kind')}
         total = len(self.reader.source_paths())
         return {'ready': True, 'settings': self.settings, 'version': self.cache.name,
+                'app_version': __version__, 'string_warnings': self.string_warnings,
                 'game_version': executable_version(self.root / 'Hearthstone.exe'),
                 'update_index_pending': self.store.get_meta('update_index_pending', False),
                 'asset_comparison_available': self.store.get_meta('asset_comparison_available'),
@@ -361,6 +390,8 @@ class Service:
             where.append("id IN (SELECT id FROM favorites WHERE kind='card')")
         # 筛选值一律绑定 SQL 参数；只允许固定列名，避免把界面输入拼入 SQL。
         filters = filters or {}
+        if hero:
+            filters = {k: v for k, v in filters.items() if k not in ('race', 'keyword')}
         if str(filters.get('new', '')) == '1':
             where.append("id IN (SELECT id FROM new_content WHERE kind='card')")
         # 独立战棋入口只收录随从。传统图鉴排除战棋实体，英雄入口保持皮肤筛选。
@@ -752,6 +783,7 @@ class Service:
         tags = dict(self.store.db.execute('SELECT CAST(tag AS TEXT),value FROM card_tags WHERE id=?', (owner,))) if owner else {}
         iterator = iter(self.reader.walk(root, locale, errors=errors, with_conditions=True,
             with_timing=True,
+            cancelled=getattr(self, 'cancel_detail', None),
             condition_match=(lambda c: matches_owner(c, owner, tags)) if owner else None))
         while True:
             try:
@@ -812,7 +844,7 @@ class Service:
             self.voice_cache_stamp[locale] = fingerprint(files)
         cached_path = None
         if self.cache and locale in self.voice_cache_stamp:
-            digest = hashlib.sha256(f'voices-v9.1:{cardid}:{locale}:{self.voice_cache_stamp[locale]}'.encode()).hexdigest()
+            digest = hashlib.sha256(f'voices-v14:{cardid}:{locale}:{self.voice_cache_stamp[locale]}'.encode()).hexdigest()
             cached_path = self.cache / 'voice-queries' / (digest + '.json')
             try:
                 cached = json.loads(cached_path.read_text('utf8'))
@@ -885,6 +917,9 @@ class Service:
                                   'transcript_dbfid': source_dbfid, 'transcript_name': source_name, 'transcript_cardid': source_cardid,
                                   'text': (sound['text'] or (transcript if not sound.get('condition_raw') else '')) if sound.get('kind', 'voice') == 'voice' else ''})
                 errors.extend(data['errors'])
+            except InterruptedError:
+                # 导航取消必须传回 worker，不能作为资源损坏吞掉并继续扫描。
+                raise
             except Exception as exc:
                 errors.append(f'{effect["name"]}: {exc}')
         # 传说英雄的内嵌配置可以通过 PPtr 而不是 GUID 字符串引用资源。
@@ -897,6 +932,8 @@ class Service:
                 existing = {s['id'] for s in items}
                 items.extend({**s, 'event': '传说英雄内嵌配置'} for s in data['items'] if s['id'] not in existing)
                 errors.extend(data['errors'])
+            except InterruptedError:
+                raise
             except Exception as exc:
                 errors.append('传说英雄内嵌配置：' + str(exc))
         # 调酒师的场景台词没有挂在 CardDef；用选中语音所携带的角色键

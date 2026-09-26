@@ -71,14 +71,16 @@ def worker_main(inbox, outbox, workspace):
                'audio', 'playback_audio', 'related_audio', 'card_audio', 'general_audio', 'effect', 'favorite', 'export', 'diagnostics', 'save_settings'}
     scan = None
     scan_scope = 'all'
-    def detail_superseded(identity):
+    def detail_superseded(identity, background=False):
         """资源图在两个预制体之间让出取消点；消息仍留在队列供主循环响应。"""
         while True:
             try:
                 queued.append(inbox.get_nowait())
             except queue.Empty:
                 break
-        return any(r.get('scope') == 'detail' and r['id'] > identity for r in queued)
+        return any(r['id'] > identity and (r.get('scope') == 'detail' or
+                   (background and r.get('method') in ('audio', 'playback_audio', 'export', 'initialize', 'save_settings', 'list_cards', 'list_assets')))
+                   for r in queued)
     try:
         while True:
             try:
@@ -94,11 +96,13 @@ def worker_main(inbox, outbox, workspace):
                 latest = {r['scope']: r['id'] for r in queued if r.get('scope')}
                 kept = deque()
                 for r in queued:
-                    if r.get('scope') and latest[r['scope']] != r['id']:
+                    if (r.get('scope') and latest[r['scope']] != r['id']) or (r.get('background') and latest.get('detail', 0) > r['id']):
                         outbox.put({'id': r['id'], 'error': '请求已被新的选择替代', 'cancelled': True})
                     else:
                         kept.append(r)
-                queued = kept
+                # 后台语言只占一个队列项，前台试听、导出和导航先执行。
+                queued = deque(r for r in kept if not r.get('background'))
+                queued.extend(r for r in kept if r.get('background'))
                 request = queued.popleft()
             except queue.Empty:
                 request = None
@@ -174,7 +178,7 @@ def worker_main(inbox, outbox, workspace):
                         if method == 'initialize' and scan:
                             scan.close()
                             scan = None
-                        service.cancel_detail = (lambda: detail_superseded(identity)) if method == 'card_audio' else lambda: False
+                        service.cancel_detail = (lambda: detail_superseded(identity, request.get('background', False))) if method == 'card_audio' else lambda: False
                         try:
                             result = getattr(service, method)(**request.get('params', {}))
                         finally:

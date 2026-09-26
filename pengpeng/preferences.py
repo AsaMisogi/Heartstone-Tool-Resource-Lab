@@ -26,6 +26,10 @@ def validate_views(value):
                       ('default', 'name', 'id', 'release') else 'default',
                       'descending': isinstance(order, dict) and order.get('descending') is True}}
         if view in ('cards', 'heroes', 'battlegrounds'):
+            if view == 'heroes':
+                # 升级时一并清除旧隐藏筛选，避免英雄列表仍被不可见条件过滤。
+                result[view]['filters'].pop('race', None)
+                result[view]['filters'].pop('keyword', None)
             # 旧工作区没有 display 时沿用默认；只允许已知模式和有限尺寸。
             display = item.get('display')
             display = display if isinstance(display, dict) else {}

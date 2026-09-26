@@ -14,13 +14,14 @@
     <script src="controls.js" defer></script>
     <script src="scrolling.js" defer></script>
     <script src="interaction.js" defer></script>
+    <script src="detail.js" defer></script>
     <script src="app.js" defer></script>
   </head>
   <body>
     <aside class="sidebar">
       <div class="brand">
         <img class="brand-icon" src="icon.svg" alt="">
-        <div><strong>砰砰解析台</strong><span>BOOM RESOURCE LAB</span></div>
+        <div><strong>砰砰解析台</strong><span id="app-version">BOOM RESOURCE LAB</span></div>
       </div>
       <div class="side-caption">你的炉石资源档案馆</div>
       <nav aria-label="主导航">
@@ -48,7 +49,7 @@
           <i id="connection-dot"></i
           ><span id="connection">正在连接本地资源</span>
         </div>
-        <div id="sidebar-version">BOOM LAB / v0.12.0</div>
+        <div id="sidebar-version">等待连接本地资源</div>
         <a href="https://space.bilibili.com/315312"
           >朝禊ASOGI <span>↗</span></a
         >
@@ -172,6 +173,7 @@
     </main>
     <div id="detail-backdrop" class="detail-backdrop" hidden></div>
     <aside id="detail" class="detail" hidden role="dialog" aria-modal="true" aria-label="资源详情">
+      <div id="detail-resize" role="separator" aria-orientation="vertical" aria-label="调整详情宽度；方向键调整，Home 或双击复原" aria-controls="detail-content" tabindex="0" title="拖动调整宽度 · 双击复原"></div>
       <div class="detail-top">
         <span id="detail-kicker">CARD INSPECTOR</span
         ><button id="close-detail" class="icon-button" aria-label="关闭详情">

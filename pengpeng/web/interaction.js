@@ -36,6 +36,32 @@ const VoiceGroups = (() => {
   return {labels, classify, select};
 })();
 
+// 跨语言使用资源名和完整触发上下文对齐，不按“登场”等展示标题或列表序号猜测。
+// 同一事件可以包含多个随机分支，必须保留名称中的序号；路径 ID 则因语言包而异。
+const VoiceLocales = (() => {
+  function stable(value) {
+    if (Array.isArray(value)) return value.map(stable);
+    if (value && typeof value === 'object') return Object.fromEntries(
+      Object.keys(value).sort().map(key => [key, stable(value[key])]));
+    return value;
+  }
+  function key(item) {
+    return JSON.stringify([String(item.name || '').toLowerCase(), item.kind || 'voice',
+      item.event || '', item.trigger_card || '', stable(item.condition_raw || null)]);
+  }
+  function index(items) {
+    const result = new Map();
+    for (const item of items) {
+      const identity = key(item);
+      if (!result.has(identity)) result.set(identity, item);
+      // 相同上下文出现不同文件时保留“不确定”，不把某个分支随意当作对应语音。
+      else if (result.get(identity)?.id !== item.id) result.set(identity, null);
+    }
+    return result;
+  }
+  return {key, index};
+})();
+
 class WaveformControl {
   constructor(canvas, audio, output, formatTime) {
     Object.assign(this, {canvas, audio, output, formatTime, peaks: [], frame: 0, drag: null, lastLabel: ""});

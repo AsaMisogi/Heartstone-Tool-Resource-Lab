@@ -1444,4 +1444,24 @@ progress::-webkit-progress-value { background:linear-gradient(90deg,#b98f62,#f0c
 .voice-top button[data-replay] { width:44px; height:44px; min-width:44px; font-size:1.35rem; background:#ffffff07; }
 [data-text-relation] { color:#a6d9cf; border-bottom-color:#a6d9cf; }
 .detail-tabs > button:not(.active)[aria-busy] { background:transparent; border-color:transparent; }
+
+/* 固定在侧栏左边缘，不随详情正文滚出屏幕；触控和键盘均可调宽。 */
+#detail { width:min(var(--detail-width, 610px), var(--viewport-width, 100vw)); }
+#detail-resize { position:fixed; top:0; bottom:0;
+  right:calc(min(var(--detail-width, 610px), var(--viewport-width, 100vw)) - 7px);
+  width:12px; cursor:ew-resize; touch-action:none; z-index:45; }
+#detail-resize::after { content:""; position:absolute; left:5px; top:0; bottom:0; width:2px; background:transparent; }
+#detail-resize:hover::after, #detail-resize:focus-visible::after,
+.detail-resizing #detail-resize::after { background:var(--accent); }
+#detail-resize:focus-visible { outline:1px solid var(--accent); outline-offset:-2px; }
+.detail-resizing, .detail-resizing * { cursor:ew-resize !important; user-select:none !important; }
 .audio-annotation { margin:5px 0; color:#b5d6ce; font-size:.88rem; }
+
+/* 对照语音嵌入主行，用分隔线和略小的字号形成层级；按钮仍保留足够点击面积。 */
+.voice-toolbar .other-language-toggle { display:flex; flex-direction:row; align-items:center; align-self:center; gap:6px; font-size:12px; }
+.voice-translations:empty { display:none; }
+.voice-translation { border-top:1px solid var(--line); padding-top:10px; margin-top:12px; }
+.voice-translation .voice-top b { color:var(--muted); font-size:.8rem; }
+.voice-translation .transcript { font-size:.94rem; line-height:1.65; font-weight:400; }
+.voice-translation .voice-top button { min-width:32px; width:32px; min-height:32px; height:32px; font-size:1rem; }
+.voice-translation .transcript-missing { font-size:.8rem; }

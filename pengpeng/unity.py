@@ -189,7 +189,7 @@ class UnityReader:
         raise ValueError(f'{cardid} 没有可识别的 CardDef')
 
     def walk(self, root, locale='zhcn', max_nodes=4000, errors=None, include_visual=False,
-             with_conditions=False, condition_match=None, with_timing=False):
+             with_conditions=False, condition_match=None, with_timing=False, cancelled=None):
         """遍历一个预制体的真实引用图，跳过脚本及父指针，避免走进其他预制体。
 
         返回 (对象, 类型树)。只遍历组件、子层级和资源引用；纹理/音频是叶节点。
@@ -199,6 +199,8 @@ class UnityReader:
         queue = deque([(root, None, None)])
         seen = set()
         while queue:
+            if cancelled and cancelled():
+                raise InterruptedError('已切换详情，停止资源遍历')
             obj, condition, timing = queue.popleft()
             key = (obj.assets_file.name, obj.path_id, json.dumps(condition, sort_keys=True) if with_conditions else '',
                    json.dumps(timing, sort_keys=True) if with_timing else '')
@@ -260,7 +262,11 @@ class UnityReader:
                 # 组件的宿主反向指针不是资源依赖。沿此指针返回 GameObject 会把
                 # 同级的其他条件音源、商店展示角色全部重新带入当前语音分支。
                 component_scene = kind == 'MonoBehaviour' and not any(k in tree for k in ('m_AudioClip', 'm_RandomClips', 'm_CardSoundData'))
-                if field in ('m_Script', 'm_Father', 'm_Shader') or (field == 'm_GameObject' and kind not in ('Transform', 'RectTransform') and not component_scene):
+                # Actor 的 spellTable 是整套手牌/战场通用表现注册表，不是当前
+                # 特效会播放的依赖。伊瑟拉的开场动画引用一个展示用 Actor，沿此
+                # 字段会展开近百个无关 FSM 和数百声音。定向读取表作为 root
+                # （general_audio）仍可工作，不能按名字屏蔽真实声音或截断数量。
+                if field in ('m_Script', 'm_Father', 'm_Shader', 'm_spellTablePrefab') or (field == 'm_GameObject' and kind not in ('Transform', 'RectTransform') and not component_scene):
                     return
                 if not include_visual and field in ('m_Materials', 'm_Mesh', 'm_Texture'):
                     return

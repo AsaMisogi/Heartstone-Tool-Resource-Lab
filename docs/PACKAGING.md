@@ -49,7 +49,7 @@ tests 是离线回归测试，tools 保留构建与可重复验收入口；不�
 可使用 --workspace、--quit-after、--screenshot 参数进行启动检查。
 只清空开发工具 PATH 不等于全新 Windows 虚拟机验收，发布说明须准确描述已做的验证。
 
-版本同步更新 pyproject.toml、pengpeng/__init__.py 和 pengpeng/web 中的界面版本文本。
+版本同步更新 pyproject.toml 和 pengpeng/__init__.py；标题栏与界面通过后端 app_version 统一读取。
 提交并推送发布源码，完成正式构建与验收后，将完整目录压缩为
 PengPengWorkbench-v<版本>-windows-x64.zip，并生成 ZIP 的 SHA-256 附件。
 GitHub Release 标签采用 v<版本>，正文仅使用 README 中去重后的本版更新日志；ZIP 上传到 Release，不提交 Git。
@@ -77,3 +77,27 @@ QML 模块、Qt6WebView/Quick DLL 和 Windows 插件，避免依赖开发机插�
 旧 Qt 滚轮、绘制工具需在独立 PowerShell 中先设置 `$env:PENGPENG_RENDERER='qt'`。
 原生工具会短暂在测试窗口内发送鼠标输入，退出恢复光标。新增原生 HWND 后，
 必须检查实际卡图页和音频播放，不能只以进程启动成功作为包内插件验收。
+
+## 0.13 验收补充
+
+```powershell
+.venv/Scripts/python.exe -m pytest -q
+node --check pengpeng/web/detail.js
+node --test tests/host.test.cjs tests/interaction.test.cjs tests/scrolling.test.cjs tests/detail.test.cjs
+.venv/Scripts/python.exe -X utf8 tools/gui_detail13.py
+```
+
+同一 GUI 工具也需以 `PENGPENG_RENDERER=qt` 验证兼容引擎。它会在自己的窗口中
+实际拖动详情边缘，检查 125% 界面倍率、保存、重开、键盘、英雄旧筛选和伊瑟拉配套试听。
+截图/日志写入 `.cache/qa-13`。使用已有独立 QA 工作区，不使用发行目录保存测试设置。
+
+
+## 0.14 语言验收
+
+运行 `.venv/Scripts/python.exe -X utf8 tools/gui_languages14.py`，用独立 `.cache/qa-14/workspace`
+连接实际客户端，验证无完整索引启动、中英字幕、双向联动、独立记忆、多语言试听和导出、
+切卡取消。设置 `PENGPENG_RENDERER=qt` 可验证兼容引擎；结果写入 `.cache/qa-14`。
+运行 pytest 覆盖注释表头、带换行字幕、异常文件隔离、初始化失败状态与偏好重启。
+本次工作仅打包供检查，不提交 Git、不推送、不发布 Release。
+
+行内语言对应规则回归：`node --test tests/voice_locales.test.cjs`，覆盖随机分支、触发条件、缺失与歧义对应。

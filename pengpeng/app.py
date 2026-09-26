@@ -220,7 +220,8 @@ class Bridge(QObject):
 class Window(QMainWindow):
     def __init__(self, workspace):
         super().__init__()
-        self.setWindowTitle('砰砰解析台 · 炉石资源工作台 — 朝禊ASOGI')
+        from . import __version__
+        self.setWindowTitle(f'砰砰解析台 v{__version__} · 炉石资源工作台 — 朝禊ASOGI')
         self.setWindowIcon(QIcon(str(Path(__file__).parent / 'web/icon.ico')))
         self.resize(1440, 940)
         self.setMinimumSize(1060, 720)

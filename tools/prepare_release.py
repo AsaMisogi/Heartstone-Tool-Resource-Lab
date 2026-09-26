@@ -15,7 +15,8 @@ def main():
         shutil.copy2(root / name, output / name)
     shutil.copy2(root / 'docs' / 'PORTABLE_README.txt', output / '使用说明.txt')
     # 将本次变更与数据来源说明随便携包提供，离线用户也能查看升级差异。
-    shutil.copy2(root / 'docs' / 'RELEASE_0_12.md', output / '更新说明.md')
+    shutil.copy2(root / 'docs' / 'RELEASE_0_14.md', output / '更新说明.md')
+    shutil.copy2(root / 'docs' / 'LANGUAGES.md', output / 'LANGUAGES.md')
     shutil.copy2(root / 'docs' / 'ENCYCLOPEDIA.md', output / 'ENCYCLOPEDIA.md')
     shutil.copy2(root / 'docs' / 'SCROLLING_AND_AUDIO.md', output / 'PERFORMANCE.md')
     shutil.copy2(root / 'docs' / 'SCROLLING_AND_AUDIO.md', output / 'SCROLLING_AND_AUDIO.md')

@@ -41,6 +41,7 @@ let host,
     // 两个图鉴独立记忆排序，避免浏览皮肤后改变卡牌顺序。
     catalogOrder: {cards: {sort: "default", descending: false}, heroes: {sort: "default", descending: false}, battlegrounds: {sort: "default", descending: false}},
     voiceLocale: "zhcn",
+    otherVoicesExpanded: true,
     voiceKind: "voice",
     voiceGroup: "all",
     voiceItems: [],
@@ -84,6 +85,7 @@ function restoreView() {
     state.subgroup = '';
   }
   state.filters = {...saved.filters};
+  if (state.view === 'heroes') { delete state.filters.race; delete state.filters.keyword; }
   state.favorites = !!saved.favorites;
   if (state.catalogOrder[state.view] && saved.order) state.catalogOrder[state.view] = {...saved.order};
   $("#search").value = state.query;
@@ -192,13 +194,13 @@ function catalogTile(c) {
 const audio = $("#audio");
 audio.volume = 0.75;
 
-function api(method, params = {}) {
+function api(method, params = {}, background = false) {
   return new Promise((resolve, reject) => {
     const id = ++serial;
     pending.set(id, { resolve, reject, method, started: performance.now() });
     const scope = ['card','portrait','card_render','card_audio','invalidate_detail'].includes(method) ? 'detail' :
       ['list_cards','list_assets'].includes(method) ? 'catalog' : '';
-    host.request(JSON.stringify({ id, method, params, scope }));
+    host.request(JSON.stringify({ id, method, params, scope: background ? "voice-background" : scope, background }));
     updateActivity();
   });
 }
@@ -237,7 +239,7 @@ function receive(encoded) {
     if (p) {
       pending.delete(data.id);
       updateActivity();
-      data.error ? p.reject(new Error(data.error)) : p.resolve(data.result);
+      data.error ? p.reject(Object.assign(new Error(data.error), {cancelled: !!data.cancelled})) : p.resolve(data.result);
     }
     return;
   }
@@ -300,6 +302,10 @@ function receive(encoded) {
 
 function updateStatus(s) {
   state.status = s;
+  if (s?.app_version) {
+    $('#app-version').textContent = `BOOM LAB · v${s.app_version}`;
+    document.title = `砰砰解析台 v${s.app_version}`;
+  }
   if (!s?.ready) return;
   state.pairedAudio = !!s.settings.paired_audio;
   state.generalAudio = !!s.settings.general_audio;
@@ -354,6 +360,7 @@ async function initialize(path, accepted = false) {
     state.selected.clear();
     state.offset = 0;
     updateStatus(s);
+    if (s.string_warnings?.length) toast(`${s.string_warnings.length} 个字幕文件未读取，其他资源可正常使用；详情见资源与设置。`);
     restoreView();
     renderView();
     $("#jobbar").hidden = true;
@@ -370,6 +377,8 @@ async function initialize(path, accepted = false) {
   } catch (e) {
     $("#jobbar").hidden = true;
     $("#cancel-scan").hidden = false;
+    state.status = await api('status');
+    $('#connection').textContent = '连接未完成，请重试';
     toast(e.message);
     state.view = "settings";
     renderView();
@@ -509,7 +518,10 @@ async function changeView(view) {
 }
 
 async function refresh(append = false, preservePosition = false) {
-  if (!state.status?.ready) return;
+  if (!state.status?.ready) {
+    $('#results').innerHTML = '<div class="empty">本地资源尚未连接，请在「资源与设置」中连接炉石目录。</div>';
+    return;
+  }
   rememberView();
   const generation = append ? state.generation : ++state.generation;
   const cards = ["cards", "heroes", "battlegrounds"].includes(state.view);
@@ -715,6 +727,7 @@ function fetchPage(cards) {
 }
 
 function closeDetail() {
+  detailResize.cancel();
   // 已播放的声音可以继续听；尚未完成的旧详情试听不应在离开后突然响起。
   if (state.preparingAudio) stopPlayback();
   if (host) api('invalidate_detail').catch(() => {});
@@ -732,6 +745,8 @@ function closeDetail() {
   if (state.returnFocus?.isConnected) state.returnFocus.focus({preventScroll: true});
   state.card = null;
   state.voiceItems = [];
+  state.otherVoices = [];
+  api('invalidate_detail').catch(() => {});
   if (fx) {
     fx.stop();
     fx = null;
@@ -745,7 +760,9 @@ async function showCard(cardid, navigation = "new") {
   const generation = ++state.detailGeneration;
   state.variant = 0;
   state.renderVariant = 0;
-  state.voiceLocale = "zhcn";
+  // 同步模式跟随当前页面筛选；独立模式跨卡牌、跨重启沿用同一偏好。
+  state.voiceLocale = state.status.settings.sync_voice_locale !== false
+    ? state.locale : (state.status.settings.voice_locale || "zhcn");
   state.voiceKind = "voice";
   state.voiceGroup = "all";
   state.voiceItems = [];
@@ -781,7 +798,7 @@ function renderCard() {
     const restoredCard = state.card;
     state.variant = previous.variant;
     state.renderVariant = previous.renderVariant;
-    state.voiceLocale = previous.voiceLocale; state.voiceKind = previous.voiceKind; state.voiceGroup = previous.voiceGroup || "all";
+    state.voiceKind = previous.voiceKind; state.voiceGroup = previous.voiceGroup || "all";
     if (previous.tab !== "art" || previous.variant) await cardTab(previous.tab);
     if (state.card === restoredCard) $("#detail").scrollTop = previous.scroll;
   });
@@ -930,16 +947,47 @@ async function cardTab(tab) {
     state.transcriptNote = "";
     state.transcriptPending = null;
     state.transcriptSources = [];
-    // 语音语言独立于图鉴文本，首次打开卡牌默认简体中文。
-    body.innerHTML = `<div class="voice-toolbar"><label>资源语言<select id="voice-locale" aria-label="语音语言">${state.status.locales.map(l => `<option value="${l.code}" ${l.code === state.voiceLocale ? "selected" : ""}>${esc(l.name)}${l.audioInstalled ? "" : " · 未安装"}</option>`).join("")}</select></label><label class="pair-label"><input id="paired-audio" type="checkbox" ${state.pairedAudio ? "checked" : ""}>配套音效 / 音乐</label><label class="pair-label" title="已知时间按时播放；未知时间随语音叠加播放；下次播放生效"><input id="general-audio" type="checkbox" ${state.generalAudio ? "checked" : ""}>通用音效</label></div><div id="voice-warning" class="warning" hidden></div><div class="detail-tabs voice-tabs"><button data-voice-kind="voice">角色语音</button><button data-voice-kind="sound">音效与音乐</button></div><input id="voice-search" type="search" placeholder="筛选台词、事件或音频名…" aria-label="筛选语音"><div id="voice-list" class="empty"><span class="spinner"></span>正在解析声音引用…</div>`;
+    state.otherVoices = [];
+    // 主语言先完成并显示，再串行补充已安装语言。
+    body.innerHTML = `<div class="voice-toolbar"><label>资源语言<select id="voice-locale" aria-label="语音语言">${state.status.locales.map(l => `<option value="${l.code}" ${l.code === state.voiceLocale ? "selected" : ""}>${esc(l.name)}${l.audioInstalled ? "" : " · 未安装"}</option>`).join("")}</select></label><label class="other-language-toggle"><input id="other-voice-locales" type="checkbox" ${state.status.settings.show_other_voice_locales ? "checked" : ""}>显示其他已安装语言</label><label class="pair-label"><input id="paired-audio" type="checkbox" ${state.pairedAudio ? "checked" : ""}>配套音效 / 音乐</label><label class="pair-label" title="已知时间按时播放；未知时间随语音叠加播放；下次播放生效"><input id="general-audio" type="checkbox" ${state.generalAudio ? "checked" : ""}>通用音效</label></div><div id="voice-warning" class="warning" hidden></div><div class="detail-tabs voice-tabs"><button data-voice-kind="voice">角色语音</button><button data-voice-kind="sound">音效与音乐</button></div><input id="voice-search" type="search" placeholder="筛选台词、事件或音频名…" aria-label="筛选语音"><div id="voice-list" class="empty"><span class="spinner"></span>正在解析声音引用…</div><p id="other-voice-status" class="note" role="status"></p>`;
     SelectUI.refresh();
+    $('.other-language-toggle').insertAdjacentHTML('afterend', `<button id="toggle-other-voices" class="subtle" ${state.status.settings.show_other_voice_locales ? '' : 'hidden'} aria-expanded="${state.otherVoicesExpanded}">${state.otherVoicesExpanded ? '折叠其他语言' : '展开其他语言'}</button>`);
+    $('#toggle-other-voices').onclick = () => {
+      state.otherVoicesExpanded = !state.otherVoicesExpanded;
+      const button = $('#toggle-other-voices');
+      button.textContent = state.otherVoicesExpanded ? '折叠其他语言' : '展开其他语言';
+      button.setAttribute('aria-expanded', String(state.otherVoicesExpanded));
+      // 折叠只改变可见性，不重建主行或重读音频；展开时补上已加载的对应条目。
+      renderOtherVoiceLists();
+    };
     $("#voice-search").oninput = () => { state.voicePage = 1; renderVoiceList(); queueVisibleSpeech(); };
     $("#voice-locale").onchange = guarded(async () => {
-      state.voiceLocale = $("#voice-locale").value;
+      const locale = $("#voice-locale").value;
+      const linked = state.status.settings.sync_voice_locale !== false;
+      try {
+        state.status.settings = await api('save_settings', {voice_locale: locale, ...(linked ? {locale} : {})});
+      } catch (error) { $('#voice-locale').value = state.voiceLocale; SelectUI.refresh(); throw error; }
+      state.voiceLocale = locale;
+      if (linked) {
+        state.locale = locale; $('#locale').value = locale;
+        rememberView(); languageWarning();
+        // 列表在详情后方更新，保留正在看的语音页。
+        refresh();
+      }
       stopPlayback();
       await cardTab("voices");
     });
-    $(".voice-toolbar").insertAdjacentHTML("beforeend", `<button id="export-voices" class="subtle" disabled>↓ 导出全部语音</button><details id="voice-options" open><summary>试听与导出选项</summary><div><label class="pair-label" title="合并为一个 WAV，保留配音尾声（最长 15 秒）"><input id="mix-voice-export" type="checkbox" ${state.mixVoiceExport ? "checked" : ""}>导出时合并音效</label></div></details>`);
+    $('#other-voice-locales').onchange = guarded(async e => {
+      const checkbox = e.target, enabled = checkbox.checked;
+      checkbox.disabled = true;
+      try {
+        state.status.settings = await api('save_settings', {show_other_voice_locales: enabled});
+        // 重开语音页使旧任务失效；主语言命中后端缓存，不重复解析资源图。
+        await cardTab('voices');
+      } catch (error) { checkbox.checked = !!state.status.settings.show_other_voice_locales; throw error; }
+      finally { checkbox.disabled = false; }
+    });
+    $(".voice-toolbar").insertAdjacentHTML("beforeend", `<button id="export-voices" class="subtle" title="导出当前资源语言的全部角色语音" disabled>↓ 导出全部语音</button><details id="voice-options" open><summary>试听与导出选项</summary><div><label class="pair-label" title="合并为一个 WAV，保留配音尾声（最长 15 秒）"><input id="mix-voice-export" type="checkbox" ${state.mixVoiceExport ? "checked" : ""}>导出时合并音效</label></div></details>`);
     document.querySelectorAll('.voice-toolbar > .pair-label').forEach(label => $("#voice-options > div").prepend(label));
     $("#export-voices").onclick = guarded(() => exportFiles({assetids: [...new Set(state.voiceItems.filter(x => x.kind === "voice").map(x => x.id))], context_cardid: c.id, locale: state.voiceLocale, ...voiceExportOptions()}));
     for (const [selector, key, setting] of [["#mix-voice-export", "mixVoiceExport", "mix_voice_export"], ["#paired-audio", "pairedAudio", "paired_audio"], ["#general-audio", "generalAudio", "general_audio"]]) {
@@ -988,6 +1036,7 @@ async function cardTab(tab) {
     state.voiceErrors = data.errors;
     renderVoiceList();
     supplementTranscripts(c, generation);
+    loadOtherVoices(c, generation);
   } else if (tab === "effects") {
     const effects = c.effects.filter((e) => !e.speech);
     body.innerHTML = `<div class="warning">实验性预览会显示真实粒子参数与关联声音，不能完整还原游戏专用脚本和动态材质。</div>${effects.map((e, i) => `<div class="voice-row"><div class="voice-top"><b>${esc(e.name)}</b><button data-effect="${i}" aria-label="预览特效">▷</button></div><small>${esc(eventName(e.field))}</small></div>`).join("") || '<div class="empty">此卡没有独立特效引用。</div>'}`;
@@ -1036,43 +1085,120 @@ function speechText(value) {
   return String(value || "").replace(/<\/?(?:b|i|strong|em|color|size)(?:[ =][^>]*)?>/gi, "")
     .replace(/\\n/g, "\n").replace(/\[x\]/g, "");
 }
-function voiceRows(items) {
+function voiceRows(items, locale = state.voiceLocale, primary = true) {
   return (
     items
       .map(
         (a) =>
-          `<div class="voice-row" data-voice-row="${esc(a.id)}"><div class="voice-top"><b>${esc((a.trigger_card || a.adventure) ? a.event : eventName(a.name + " " + (a.event || "")))}</b><div><button data-play="${esc(a.id)}" aria-label="试听">▷</button><button data-replay="${esc(a.id)}" aria-label="从头重播">↻</button><button data-export="${esc(a.id)}" aria-label="导出 WAV">↓</button></div></div>${a.condition ? `<p class="voice-condition">${esc(a.condition)}</p>` : ""}${a.condition_targets?.length ? `<details class="voice-targets"><summary>查看适用对象 · ${a.condition_targets.length}</summary><div class="condition-targets">${a.condition_targets.map(t=>`<button class="subtle" data-trigger-card="${esc(t.id)}">${esc(t.name)} ↗</button>`).join("")}</div></details>` : ""}${a.text ? `<p class="transcript">${esc(speechText(a.text))}</p>${a.source ? `<a class="transcript-source" href="${esc(a.source)}">${esc(a.source_name)} · ${a.match_method === "audio_key" ? "按音频键精确匹配" : "按唯一事件匹配"}${a.stale ? " · 离线缓存" : ""} ↗</a>` : '<small>客户端字幕</small>'}` : a.kind === "voice" ? `${a.speech_text ? `<p class="transcript">${esc(a.speech_text)}</p><small class="speech-label">语音识别 · 不保证准确性${a.speech_cached ? " · 缓存" : ""}</small>` : `<p class="transcript-missing">${esc(a.speech_error || (a.speech_done ? "未识别出文字" : "暂无台词"))}</p>`}${state.status.settings.speech_recognition !== false && ["zhcn", "enus"].includes(state.voiceLocale) ? `<button class="subtle speech-retry" data-speech="${esc(a.id)}" ${state.speechRun || state.transcriptPending === state.detailGeneration ? "disabled" : ""}>${a.speech_done || a.speech_error ? "重试语音识别" : "语音识别"}</button>` : ""}` : ""}<details class="voice-technical"><summary>资源信息与触发时间</summary><p>${esc(a.timing?.label || "触发时间依赖游戏状态，尚未确定")}</p><small>${esc(a.name)}<br>${esc(a.event || "")} · ${esc(a.locale)}</small></details>${a.trigger_card ? `<button class="subtle" data-trigger-card="${esc(a.trigger_card)}">查看触发卡牌 ↗</button>` : ""}</div>`,
+          `<div class="voice-row" data-voice-row="${esc(a.id)}" data-voice-locale="${esc(locale)}"><div class="voice-top"><b>${esc((a.trigger_card || a.adventure) ? a.event : eventName(a.name + " " + (a.event || "")))}</b><div><button data-play="${esc(a.id)}" aria-label="试听">▷</button><button data-replay="${esc(a.id)}" aria-label="从头重播">↻</button><button data-export="${esc(a.id)}" aria-label="导出 WAV">↓</button></div></div>${a.condition ? `<p class="voice-condition">${esc(a.condition)}</p>` : ""}${a.condition_targets?.length ? `<details class="voice-targets"><summary>查看适用对象 · ${a.condition_targets.length}</summary><div class="condition-targets">${a.condition_targets.map(t=>`<button class="subtle" data-trigger-card="${esc(t.id)}">${esc(t.name)} ↗</button>`).join("")}</div></details>` : ""}${a.text ? `<p class="transcript">${esc(speechText(a.text))}</p>${a.source ? `<a class="transcript-source" href="${esc(a.source)}">${esc(a.source_name)} · ${a.match_method === "audio_key" ? "按音频键精确匹配" : "按唯一事件匹配"}${a.stale ? " · 离线缓存" : ""} ↗</a>` : '<small>客户端字幕</small>'}` : a.kind === "voice" ? `${a.speech_text ? `<p class="transcript">${esc(a.speech_text)}</p><small class="speech-label">语音识别 · 不保证准确性${a.speech_cached ? " · 缓存" : ""}</small>` : `<p class="transcript-missing">${esc(a.speech_error || (a.speech_done ? "未识别出文字" : "暂无台词"))}</p>`}${primary && state.status.settings.speech_recognition !== false && ["zhcn", "enus"].includes(locale) ? `<button class="subtle speech-retry" data-speech="${esc(a.id)}" ${state.speechRun || state.transcriptPending === state.detailGeneration ? "disabled" : ""}>${a.speech_done || a.speech_error ? "重试语音识别" : "语音识别"}</button>` : ""}` : ""}<details class="voice-technical"><summary>资源信息与触发时间</summary><p>${esc(a.timing?.label || "触发时间依赖游戏状态，尚未确定")}</p><small>${esc(a.name)}<br>${esc(a.event || "")} · ${esc(a.locale)}</small></details>${a.trigger_card ? `<button class="subtle" data-trigger-card="${esc(a.trigger_card)}">查看触发卡牌 ↗</button>` : ""}${primary && a.locale !== "global" ? `<div class="voice-translations" data-voice-match="${esc(VoiceLocales.key(a))}"></div>` : ""}</div>`,
       )
       .join("") || '<div class="empty">此引用下未发现可读取的音频。</div>'
   );
 }
 function bindVoices(node) {
-  node.querySelectorAll("[data-replay]").forEach(b => b.onclick = guarded(() => playAsset(b.dataset.replay, true)));
+  node.querySelectorAll("[data-replay]").forEach(b => b.onclick = guarded(() => playAsset(b.dataset.replay, true, b.closest("[data-voice-locale]")?.dataset.voiceLocale)));
   node.querySelectorAll("[data-trigger-card]").forEach(b => b.onclick = guarded(() => showCard(b.dataset.triggerCard, "related")));
   node.querySelectorAll("[data-speech]").forEach(button => {
     button.onclick = guarded(() => recognizeMissing(state.detailGeneration, button.dataset.speech));
   });
   node
     .querySelectorAll("[data-play]")
-    .forEach((b) => (b.onclick = guarded(() => playAsset(b.dataset.play))));
+    .forEach((b) => (b.onclick = guarded(() => playAsset(b.dataset.play, false, b.closest("[data-voice-locale]")?.dataset.voiceLocale))));
   node
     .querySelectorAll("[data-export]")
     .forEach(
       (b) =>
         (b.onclick = guarded(() =>
-          exportFiles({ assetids: [b.dataset.export], context_cardid: state.card?.id || "", locale: state.voiceLocale, ...voiceExportOptions() }),
+          exportFiles({ assetids: [b.dataset.export], context_cardid: state.card?.id || "", locale: b.closest("[data-voice-locale]")?.dataset.voiceLocale || state.voiceLocale, ...voiceExportOptions() }),
         )),
     );
 }
+// 额外语言只读取元数据和客户端字幕，不批量解码/识别/联网补词。
+// 同时最多一项请求；每次返回检查页面代次，离开详情后不再排队或更新 DOM。
+async function loadOtherVoices(card, generation) {
+  if (!state.status.settings.show_other_voice_locales) return;
+  const active = () => generation === state.detailGeneration && state.tab === 'voices' &&
+    state.status.settings.show_other_voice_locales;
+  const groups = state.status.locales.filter(l => l.audioInstalled && l.code !== state.voiceLocale)
+    .map(l => ({locale:l.code, name:l.name, items:[], errors:[], index:new Map(), status:'waiting'}));
+  state.otherVoices = groups;
+  renderOtherVoiceLists();
+  for (const group of groups) {
+    // 给主语言播放/解码和用户输入一次入队机会，后台任务不能抢在它们前面。
+    while (active()) {
+      await new Promise(resolve => setTimeout(resolve, 180));
+      if (!active()) return;
+      if (state.preparingAudio) continue;
+      group.status = 'loading'; renderOtherVoiceLists(group.locale);
+      try {
+        const data = await api('card_audio', {cardid:card.id, locale:group.locale}, true);
+        if (!active()) return;
+        group.items = data.items; group.index = VoiceLocales.index(data.items); group.errors = data.errors; group.status = 'ready';
+        break;
+      } catch (error) {
+        if (!active()) return;
+        // 主语言试听会中断资源图遍历；待交互完成后继续同一种语言。
+        if (error.cancelled) { group.status = 'waiting'; continue; }
+        group.status = 'error'; group.errors = [error.message]; break;
+      }
+    }
+    if (!active()) return;
+    renderOtherVoiceLists(group.locale);
+  }
+}
+
+function renderOtherVoiceLists(onlyLocale = null, root = $('#voice-list')) {
+  if (!root) return;
+  const enabled = !!state.status.settings.show_other_voice_locales;
+  const groups = state.otherVoices || [];
+  const note = $('#other-voice-status');
+  if (note) {
+    note.hidden = !enabled;
+    const pending = groups.filter(group => ['waiting', 'loading'].includes(group.status)).length;
+    note.textContent = !groups.length ? '未发现其他已安装的语音语言。' : pending ?
+      `其他语言逐种加载中 · 剩余 ${pending} 种；主语言可立即试听。` : '其他语言已按对应语音显示；通用音效不重复列出。';
+  }
+  // 只访问当前页的槽位。每种语言预建查找表，更新成本随当前页行数线性增长。
+  // 不改主语言 DOM；收起时不生成其他语言按钮，翻页/切组也沿用统一展开状态。
+  root.querySelectorAll('[data-voice-match]').forEach(slot => {
+    slot.hidden = !enabled || !state.otherVoicesExpanded;
+    if (slot.hidden) return;
+    for (const group of groups) {
+      if (onlyLocale && group.locale !== onlyLocale) continue;
+      let block = slot.querySelector(`[data-other-language="${group.locale}"]`);
+      if (!block) {
+        block = document.createElement('div'); block.className = 'voice-translation';
+        block.dataset.otherLanguage = group.locale; block.dataset.voiceLocale = group.locale;
+        slot.append(block);
+      }
+      const item = group.index.get(slot.dataset.voiceMatch);
+      const label = `<b>${esc(group.name)}</b>`;
+      if (group.status !== 'ready' || !item) {
+        const message = group.status === 'error' ? '读取失败，可重试' :
+          group.status === 'ready' ? '未找到可确认对应的语音' : '等待加载对应语音…';
+        block.innerHTML = `<div class="voice-top">${label}</div><p class="transcript-missing">${message}</p>` +
+          (group.status === 'error' ? errorBox(group.errors) + '<button class="subtle" data-retry-language>重试读取</button>' : '');
+        const retry = block.querySelector('[data-retry-language]');
+        if (retry) retry.onclick = guarded(() => cardTab('voices'));
+        continue;
+      }
+      block.innerHTML = `<div class="voice-top">${label}<div><button data-play="${esc(item.id)}" aria-label="试听 ${esc(group.name)}">▷</button><button data-replay="${esc(item.id)}" aria-label="重播 ${esc(group.name)}">↻</button><button data-export="${esc(item.id)}" aria-label="导出 ${esc(group.name)} WAV">↓</button></div></div>` +
+        (item.text ? `<p class="transcript">${esc(speechText(item.text))}</p><small>客户端字幕</small>` : '<p class="transcript-missing">暂无台词</p>');
+      bindVoices(block); attachAudioExports(block);
+    }
+  });
+  syncPlaybackButton();
+}
+
 function errorBox(errors) {
   return errors?.length
     ? `<details class="warning"><summary>${errors.length} 项资源未完整解析，查看原因</summary>${errors.map((e) => `<div>${esc(e)}</div>`).join("")}</details>`
     : "";
 }
 
-async function playAsset(assetid, replay = false) {
+async function playAsset(assetid, replay = false, resourceLocale = null) {
   // 同一资源再次点击直接暂停/继续，避免重新解码和从头播放。
-  if (!replay && !state.preparingAudio && currentAudio?.assetid === assetid && !audio.ended) {
+  if (!replay && !state.preparingAudio && currentAudio?.assetid === assetid && (!resourceLocale || currentAudio.locale === resourceLocale) && !audio.ended) {
     $("#play-pause").click();
     return;
   }
@@ -1087,8 +1213,10 @@ async function playAsset(assetid, replay = false) {
   audio.pause();
   // 解码进度由统一状态区显示，避免播放开始后残留七秒的“准备中”提示。
   const contextCardid = state.card?.id || "";
-  const voiceLocale = contextCardid ? state.voiceLocale : state.locale;
-  const selected = state.voiceItems.find(x => x.id === assetid && x.kind === "voice");
+  const voiceLocale = resourceLocale || (contextCardid ? state.voiceLocale : state.locale);
+  const items = voiceLocale === state.voiceLocale ? state.voiceItems :
+    (state.otherVoices?.find(group => group.locale === voiceLocale)?.items || []);
+  const selected = items.find(x => x.id === assetid && x.kind === "voice");
   // 配音只经后端生成一条时间轴 WAV。浏览器只有一个媒体时钟，暂停、
   // 拖动和重播不再依赖多条 Audio 的 play 事件及不精确的 setTimeout。
   const data = selected && (state.pairedAudio || state.generalAudio)
@@ -1219,7 +1347,7 @@ async function exportFiles(params) {
   $("#open-last-export").onclick = () => host.openFolder(result.folder);
   // 每个音频保留自己的目录；切换页签、再次导出其他音频也不会覆盖它。
   if (params.assetids?.length === 1 && result.files.length) {
-    state.audioExports.set(params.assetids[0], result.folder);
+    state.audioExports.set(`${params.locale || state.locale}:${params.assetids[0]}`, result.folder);
     attachAudioExports(document);
   }
   // 非音频导出继续使用原有的区域入口。
@@ -1259,7 +1387,17 @@ function renderSettings() {
     export_path: "",
   };
   $("#settings-page").innerHTML =
-    `<div class="setting"><label>炉石安装目录</label><div class="path-row"><input id="game-path" value="${esc(s.game_path)}" aria-label="炉石目录"><button id="browse-game" class="subtle">浏览…</button><button id="connect-game" class="primary">连接</button></div><p>读取 Data/Win 与 Strings；无需运行游戏，不修改安装文件。</p></div><div class="setting"><label>导出位置</label><div class="path-row"><input id="export-path" value="${esc(s.export_path)}" aria-label="导出目录"><button id="browse-export" class="subtle">浏览…</button><button id="save-export" class="subtle">保存</button></div><p>每次导出新建目录，避免覆盖已有作品。缓存与日志保存在工具的 workspace 文件夹。</p></div><div class="setting"><label>资源索引与诊断</label><p>索引覆盖本地资源包。未安装语言包的声音无法读取；卡牌文本可切换本地 DBF 内的语言。扫描支持断点继续，游戏更新后按文件指纹使用新快照。</p><button id="diagnostics" class="subtle">查看索引诊断</button><div id="diagnostics-result"></div></div><div class="setting"><label>关于砰砰解析台 BOOM LAB</label><p>版本 0.4.0 · 作者 朝禊ASOGI<br>参考 Hermes 的资源清单解析思路，独立实现可视化工作台。游戏美术与声音属于相应权利人，发布代码不包含游戏素材。</p><div class="about-links"><a href="https://github.com/AsaMisogi/Heartstone-Tool-Resource-Lab" class="subtle repository-link" title="在浏览器中打开 GitHub 仓库">GitHub · 源码与反馈 ↗</a><a href="https://space.bilibili.com/315312" class="subtle">B站 · 朝禊ASOGI ↗</a></div><p>原画与声音读取本地资源；完整卡面按需从 HearthstoneJSON 获取并缓存。特效为实验性二维预览，完整 Unity 运行时渲染尚未实现。</p></div>`;
+    `<div class="setting"><label>炉石安装目录</label><div class="path-row"><input id="game-path" value="${esc(s.game_path)}" aria-label="炉石目录"><button id="browse-game" class="subtle">浏览…</button><button id="connect-game" class="primary">连接</button></div><p>读取 Data/Win 与 Strings；无需运行游戏，不修改安装文件。</p></div><div class="setting"><label>导出位置</label><div class="path-row"><input id="export-path" value="${esc(s.export_path)}" aria-label="导出目录"><button id="browse-export" class="subtle">浏览…</button><button id="save-export" class="subtle">保存</button></div><p>每次导出新建目录，避免覆盖已有作品。缓存与日志保存在工具的 workspace 文件夹。</p></div><div class="setting"><label>资源索引与诊断</label><p>索引覆盖本地资源包。未安装语言包的声音无法读取；卡牌文本可切换本地 DBF 内的语言。扫描支持断点继续，游戏更新后按文件指纹使用新快照。</p><button id="diagnostics" class="subtle">查看索引诊断</button><div id="diagnostics-result"></div></div><div class="setting"><label>关于砰砰解析台 BOOM LAB</label><p>版本 ${esc(state.status?.app_version || "—")} · 作者 朝禊ASOGI<br>参考 Hermes 的资源清单解析思路，独立实现可视化工作台。游戏美术与声音属于相应权利人，发布代码不包含游戏素材。</p><div class="about-links"><a href="https://github.com/AsaMisogi/Heartstone-Tool-Resource-Lab" class="subtle repository-link" title="在浏览器中打开 GitHub 仓库">GitHub · 源码与反馈 ↗</a><a href="https://space.bilibili.com/315312" class="subtle">B站 · 朝禊ASOGI ↗</a></div><p>原画与声音读取本地资源；完整卡面按需从 HearthstoneJSON 获取并缓存。特效为实验性二维预览，完整 Unity 运行时渲染尚未实现。</p></div>`;
+  $('#settings-page').insertAdjacentHTML('afterbegin', `<div class="setting"><h3>语音语言</h3><label><input id="sync-voice-locale" type="checkbox" ${s.sync_voice_locale !== false ? 'checked' : ''}> 筛选器与资源语言同步</label><p>默认同步，修改任意一处会更新另一处。关闭后，筛选语言按页面记忆，资源语言跨卡牌和重启独立记忆。其他已安装语言可在语音页勾选显示，逐种加载并放在对应语音下方，支持统一折叠和展开。</p></div>`);
+  $('#sync-voice-locale').onchange = guarded(async e => {
+    const checkbox = e.target;
+    try {
+      state.status.settings = await api('save_settings', {sync_voice_locale: checkbox.checked});
+      state.voiceLocale = checkbox.checked ? state.locale : state.status.settings.voice_locale;
+    } catch (error) { checkbox.checked = s.sync_voice_locale !== false; throw error; }
+  });
+  if (state.status?.string_warnings?.length) $('#settings-page').insertAdjacentHTML('afterbegin',
+    `<div class="setting">${errorBox(state.status.string_warnings)}<p>以上字幕文件已跳过；图鉴和音频仍可使用。客户端下载完成后可重新连接。</p></div>`);
   $("#browse-game").onclick = () =>
     host.chooseDirectory("game", (p) => {
       if (p) $("#game-path").value = p;
@@ -1548,10 +1686,11 @@ try {
 renderOrder();
 $("#locale").onchange = guarded(async () => {
   state.locale = $("#locale").value;
+  if (state.status.settings.sync_voice_locale !== false) state.voiceLocale = state.locale;
   state.offset = 0;
   state.selected.clear();
   languageWarning();
-  await api("save_settings", { locale: state.locale });
+  state.status.settings = await api("save_settings", { locale: state.locale });
   const language = state.status.locales.find((l) => l.code === state.locale);
   if (!language?.audioInstalled)
     toast("本地未安装此语言语音。文本仍可读取；不会用其他语言冒充；通用音效仍可使用。");
@@ -1596,6 +1735,11 @@ $("#index-guide").addEventListener("cancel", e => {
   e.preventDefault();
   guarded(() => dismissIndexGuide(false))();
 });
+const detailResize = DetailResize.install($('#detail'), $('#detail-resize'), width => {
+  api('save_settings', {detail_width:width}).then(settings => {
+    if (state.status) state.status.settings.detail_width = settings.detail_width;
+  }).catch(e => toast('详情宽度保存失败：' + e.message));
+}, logicalViewport);
 $("#close-detail").onclick = closeDetail;
 $("#logs-toggle").onclick = () => {
   $("#log-panel").hidden = !$("#log-panel").hidden;
@@ -1604,14 +1748,15 @@ $("#logs-toggle").onclick = () => {
 $("#close-logs").onclick = () => ($("#log-panel").hidden = true);
 $("#open-logs").onclick = () => host.openLogs();
 $("#play-pause").onclick = () => {
-  if (audio.ended && currentAudio) guarded(() => playAsset(currentAudio.assetid, true))();
+  if (audio.ended && currentAudio) guarded(() => playAsset(currentAudio.assetid, true, currentAudio.locale))();
   else if (audio.paused) audio.play().catch(e => toast(e.message));
   else audio.pause();
 };
 function syncPlaybackButton() {
   const playing = !audio.paused;
   document.querySelectorAll('[data-play]').forEach(button => {
-    const active = currentAudio?.assetid === button.dataset.play && playing;
+    const locale = button.closest("[data-voice-locale]")?.dataset.voiceLocale;
+    const active = currentAudio?.assetid === button.dataset.play && (!locale || currentAudio.locale === locale) && playing;
     const preparing = state.preparingAudio === button.dataset.play;
     button.textContent = preparing ? '…' : active ? 'Ⅱ' : '▷';
     button.setAttribute('aria-label', preparing ? '正在准备试听' : active ? '暂停' : '试听');
@@ -1621,7 +1766,7 @@ function syncPlaybackButton() {
 }
 $("#volume").oninput = () => { audio.volume = Number($("#volume").value); };
 $("#stop-player").onclick = stopPlayback;
-$("#replay-track").onclick = guarded(() => currentAudio && playAsset(currentAudio.assetid, true));
+$("#replay-track").onclick = guarded(() => currentAudio && playAsset(currentAudio.assetid, true, currentAudio.locale));
 function stopPlayback() {
   playGeneration++;
   state.preparingAudio = null;
@@ -1780,6 +1925,7 @@ function renderVoiceList() {
     await api('save_settings', {voice_page_size: state.voicePageSize});
     queueVisibleSpeech();
   });
+  renderOtherVoiceLists();
   bindVoices($("#voice-list"));
   syncPlaybackButton();
   if (state.voiceKind === "voice") {
@@ -1863,7 +2009,7 @@ function renderFilters() {
     ? make("hero_group", "英雄职业", f.hero_groups) + make("battlegrounds", "酒馆皮肤", [{value: "exclude", label: "不显示酒馆皮肤"}, {value: "only", label: "只显示酒馆皮肤"}])
     : state.view === "battlegrounds" ? make("tier", "酒馆等级", Array.from({length:7},(_,i)=>({value:String(i+1),label:`${i+1} 星`}))) + make("bg_pool", "随从池", [{value:"1",label:"客户端标记可入池"},{value:"0",label:"衍生 / 金色 / 非入池"}])
     : make("set", "系列", f.sets) + make("format", "赛制", f.formats) + make("class", "职业", f.classes) + make("rarity", "稀有度", f.rarities) + make("cost", "法力消耗", cost) + make("type", "类别", f.types) + make("collectible", "收集状态", [{value: "1", label: "可收集"}, {value: "0", label: "衍生 / 非收集"}]);
-  node.innerHTML += make("race", "种族", f.races) + make("keyword", "词条", f.keywords);
+  if (state.view !== "heroes") node.innerHTML += make("race", "种族", f.races) + make("keyword", "词条", f.keywords);
   if (state.view === "heroes") node.querySelector('[data-filter="battlegrounds"] option').textContent = "显示酒馆皮肤";
 
   node.querySelectorAll("select").forEach(select => select.onchange = guarded(() => {
@@ -1876,11 +2022,12 @@ function renderFilters() {
 }
 async function startup() {
   const status = await api("status");
-  state.status = status;
+  updateStatus(status);
   if (status.settings.auto_check_updates !== false) checkUpdates(false);
   state.viewStates = status.settings.view_state || {};
   state.preferencesReady = true;
   applyDisplay(status.settings);
+  detailResize.set(status.settings.detail_width);
   restoreView();
   if (status.settings.game_path?.trim()) await initialize();
   else { $("#connection").textContent = "请选择炉石目录"; $("#welcome").showModal(); }
@@ -1976,10 +2123,11 @@ new IntersectionObserver(entries => {
 }, {rootMargin: '180px'}).observe($('#load-more'));
 function attachAudioExports(root) {
   root.querySelectorAll("[data-export]").forEach(source => {
-    const folder = state.audioExports.get(source.dataset.export);
+    const locale = source.closest("[data-voice-locale]")?.dataset.voiceLocale || state.voiceLocale;
+    const folder = state.audioExports.get(`${locale}:${source.dataset.export}`);
     if (!folder) return;
-    const row = source.closest(".voice-row");
-    let button = row.querySelector(".open-audio-export");
+    const row = source.closest(".voice-translation, .voice-row");
+    let button = row.querySelector(":scope > .open-audio-export");
     if (!button) { button = document.createElement("button"); button.className = "subtle open-audio-export"; row.append(button); }
     button.textContent = "打开导出文件夹 ↗";
     button.onclick = () => host.openFolder(folder);
@@ -2151,15 +2299,18 @@ setInterval(updateActivity, 1000);
 
 // 一条识别完成只替换它的可见行，不销毁分页、筛选框和其余正在交互的按钮。
 function updateRecognizedRows(id) {
-  document.querySelectorAll('[data-voice-row]').forEach(row => {
+  document.querySelectorAll('#voice-list [data-voice-row]').forEach(row => {
     if (row.dataset.voiceRow !== id) return;
-    const item = state.voiceItems.find(item => item.id === id);
+    // 同一文件可能用于多个事件；识别结果更新不能把其他触发上下文搬到这一行。
+    const match = row.querySelector('[data-voice-match]')?.dataset.voiceMatch;
+    const item = state.voiceItems.find(item => item.id === id && (!match || VoiceLocales.key(item) === match));
     if (!item) return;
     const template = document.createElement('template');
     template.innerHTML = voiceRows([item]);
     const next = template.content.firstElementChild;
     const focused = row.contains(document.activeElement) ? document.activeElement.dataset : null;
     row.replaceWith(next);
+    renderOtherVoiceLists(null, next);
     bindVoices(next); attachAudioExports(next);
     if (focused?.play) next.querySelector('[data-play]')?.focus({preventScroll:true});
     if (focused?.speech) next.querySelector('[data-speech]')?.focus({preventScroll:true});
