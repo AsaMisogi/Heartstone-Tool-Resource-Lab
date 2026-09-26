@@ -8,6 +8,20 @@
 
 注：本工具由AI辅助完成！*警告：该机器人随时可能爆炸。*
 
+【便携包下载（即开即用！）】
+
+Github：
+
+https://github.com/AsaMisogi/Heartstone-Tool-Resource-Lab/releases
+
+度盘：
+
+https://pan.baidu.com/s/1yl8F1jzX1jFhAMu3bZ-4Cw?pwd=jnha
+
+提取码: jnha
+
+---
+
 [v0.14.0 更新日志](#更新日志) · [快速开始](#快速开始) · [功能与截图](#功能与截图) · [常见问题](#常见问题) · [许可与使用边界](#许可与使用边界)
 
 ![砰砰解析台主界面：卡牌搜索、组合筛选与资源概览](docs/screenshots/overview.png)
